@@ -92,6 +92,13 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, pr
 		return err
 	}
 
+	// Surface the org's retrieve messages (e.g. a requested component that
+	// couldn't be found) even on success — otherwise a typo'd or missing member
+	// silently yields a package.xml-only result.
+	for _, m := range res.Messages {
+		fmt.Fprintln(os.Stderr, "warning:", m)
+	}
+
 	if metadataFormat {
 		written, err := mdapi.Unzip(res.ZipFile, outputDir)
 		if err != nil {

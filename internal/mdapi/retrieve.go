@@ -41,11 +41,13 @@ type retrieveStatusEnv struct {
 
 // Retrieve starts an async retrieve and returns its job id.
 func (c *Client) Retrieve(ctx context.Context, pkg *Package) (string, error) {
+	unpackaged := unpackagedXML(pkg, c.APIVersion)
 	body := `<met:retrieve><met:retrieveRequest>` +
 		`<met:apiVersion>` + c.APIVersion + `</met:apiVersion>` +
 		`<met:singlePackage>true</met:singlePackage>` +
-		`<met:unpackaged>` + unpackagedXML(pkg, c.APIVersion) + `</met:unpackaged>` +
+		`<met:unpackaged>` + unpackaged + `</met:unpackaged>` +
 		`</met:retrieveRequest></met:retrieve>`
+	debugf("retrieve request unpackaged: %s", unpackaged)
 
 	raw, err := c.call(ctx, "retrieve", body)
 	if err != nil {
@@ -55,6 +57,7 @@ func (c *Client) Retrieve(ctx context.Context, pkg *Package) (string, error) {
 	if err := xml.Unmarshal(raw, &env); err != nil {
 		return "", fmt.Errorf("parse retrieve response: %w", err)
 	}
+	debugf("retrieve response: id=%q done=%t state=%q", env.Result.ID, env.Result.Done, env.Result.State)
 	if env.Result.ID == "" {
 		return "", fmt.Errorf("retrieve returned no job id: %s", snippet(raw))
 	}
@@ -77,6 +80,8 @@ func (c *Client) CheckRetrieveStatus(ctx context.Context, id string) (done bool,
 		return false, nil, fmt.Errorf("parse checkRetrieveStatus response: %w", err)
 	}
 	r := env.Result
+	debugf("checkRetrieveStatus: done=%t status=%q success=%t zipB64Len=%d messages=%d",
+		r.Done, r.Status, r.Success, len(r.ZipFile), len(r.Messages))
 	if !r.Done {
 		return false, nil, nil
 	}
