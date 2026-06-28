@@ -66,7 +66,7 @@ A native browser login (`sff login`, OAuth web flow + PKCE on the public
 ```sh
 sff query "SELECT Id, Name FROM Account LIMIT 10"          # default org, table
 sff query "SELECT Id FROM Contact" -o pr-dev               # pick org by alias
-sff query "SELECT Id, Name FROM Profile LIMIT 1" --json    # raw JSON records
+sff query "SELECT Id, Name FROM Profile LIMIT 1" --json    # sf-compatible JSON
 sff query "SELECT Id, Name FROM Account" --csv             # CSV to stdout
 sff query "SELECT Id, Name FROM Account" --csv -f acc.csv  # CSV to a file
 sff query "SELECT Id, Name FROM ApexClass" -t              # Tooling API (sf data query -t)
@@ -75,6 +75,10 @@ sff query "SELECT Id, Name FROM ApexClass" -t              # Tooling API (sf dat
 Output formats: table (default), `--json`, `--csv` (mutually exclusive).
 `-f/--out-file` writes the data to a file; the timing summary then goes to
 stderr, so piped or saved output stays clean.
+
+`--json` mirrors `sf data query --json` exactly — `{"status":0,"result":
+{"records":[…],"totalSize":N,"done":true}}` — so sff is a drop-in replacement
+in scripts that parse `.result.records`.
 
 ## Retrieving metadata (`sff retrieve`)
 

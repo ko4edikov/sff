@@ -92,7 +92,7 @@ func runQuery(ctx context.Context, soql string, format outFormat, outFile string
 
 	switch format {
 	case formatJSON:
-		err = writeJSON(w, records)
+		err = writeJSON(w, records, total)
 	case formatCSV:
 		err = writeCSV(w, records, total)
 	default:
@@ -124,10 +124,30 @@ func summarySep(format outFormat) string {
 	return ""
 }
 
-func writeJSON(w io.Writer, records []json.RawMessage) error {
+// sfQueryJSON mirrors `sf data query --json` so sff is a drop-in replacement
+// for tooling that parses sf's output (`.result.records`, etc.).
+type sfQueryJSON struct {
+	Status int           `json:"status"`
+	Result sfQueryResult `json:"result"`
+}
+
+type sfQueryResult struct {
+	Records   []json.RawMessage `json:"records"`
+	TotalSize int               `json:"totalSize"`
+	Done      bool              `json:"done"`
+}
+
+func writeJSON(w io.Writer, records []json.RawMessage, total int) error {
+	if records == nil {
+		records = []json.RawMessage{} // match sf: empty array, not null
+	}
+	out := sfQueryJSON{
+		Status: 0,
+		Result: sfQueryResult{Records: records, TotalSize: total, Done: true},
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(records)
+	return enc.Encode(out)
 }
 
 // writeCSV writes records as RFC 4180 CSV with a header row in SELECT order.
