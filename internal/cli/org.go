@@ -11,6 +11,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ko4edikov/sff/internal/auth"
+	"github.com/ko4edikov/sff/internal/mdapi"
+	"github.com/ko4edikov/sff/internal/sfapi"
 )
 
 func newOrgCmd() *cobra.Command {
@@ -43,7 +45,67 @@ func newOrgListCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output JSON")
+	cmd.AddCommand(newOrgListMetadataTypesCmd())
 	return cmd
+}
+
+func newOrgListMetadataTypesCmd() *cobra.Command {
+	var asJSON, refresh bool
+	var apiVersion string
+	cmd := &cobra.Command{
+		Use:     "metadata-types",
+		Short:   "List the org's metadata types (Metadata API describeMetadata)",
+		Long:    "Call describeMetadata and print the metadata type catalog. Results are cached\nin ~/.sff keyed by org and API version; use --refresh to re-fetch.",
+		Aliases: []string{"metadata-type"},
+		Args:    cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runListMetadataTypes(cmd.Context(), apiVersion, asJSON, refresh)
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "output JSON")
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "ignore the cache and re-fetch from the org")
+	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "Metadata API version")
+	addTargetOrgFlag(cmd)
+	return cmd
+}
+
+func runListMetadataTypes(ctx context.Context, apiVersion string, asJSON, refresh bool) error {
+	org, err := auth.Resolve(targetOrg)
+	if err != nil {
+		return err
+	}
+	client := mdapi.New(org)
+	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
+
+	res, cached, err := client.DescribeMetadataCached(ctx, refresh)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(res)
+	}
+	return printMetadataTypes(res, cached)
+}
+
+func printMetadataTypes(res *mdapi.DescribeResult, cached bool) error {
+	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "XML NAME\tCHILD XML NAMES\tDIRECTORY\tIN FOLDER\tMETA FILE\tSUFFIX")
+	fmt.Fprintln(tw, "────────\t───────────────\t─────────\t─────────\t─────────\t──────")
+	for _, o := range res.Objects {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%t\t%s\n",
+			o.Name, strings.Join(o.ChildXMLNames, ", "), o.DirectoryName, o.InFolder, o.MetaFile, o.Suffix)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	src := "live"
+	if cached {
+		src = "cached; --refresh to update"
+	}
+	fmt.Printf("\n%d type(s) (%s)\n", len(res.Objects), src)
+	return nil
 }
 
 func printOrgs(orgs []*auth.OrgSummary) error {

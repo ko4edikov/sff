@@ -43,6 +43,8 @@ secrets in newer versions):
 ```sh
 sff org list                 # all authenticated orgs (▸ marks the default)
 sff org list --json
+sff org list metadata-types -o pr-dev      # the org's metadata type catalog
+sff org list metadata-types --refresh      # re-fetch (bypass the ~/.sff cache)
 sff org display              # default org (~/.sf/config.json target-org)
 sff org display pr-dev       # by alias (~/.sfdx/alias.json)
 sff org display user@x.com   # by username
@@ -51,6 +53,13 @@ sff org display pr-dev --refresh   # refresh the access token first
 
 `sff org list` reads the auth files directly (no token decryption, no network),
 so it's instant; it skips sf's `*.sandbox.json` tracking stubs.
+
+`sff org list metadata-types` calls the Metadata API `describeMetadata` (analog
+of `sf org list metadata-types`) and prints each type's `directoryName`,
+`suffix`, `metaFile`, `inFolder`, and `childXmlNames`. The result is cached in
+`~/.sff/describe-<orgid>-v<api>.json` (the catalog changes rarely); `--refresh`
+re-fetches. This catalog is what will drive correct `package.xml` building and
+source-format decomposition.
 
 Decryption details (verified against `@salesforce/cli` on macOS):
 
