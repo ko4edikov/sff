@@ -66,8 +66,10 @@ Decryption details (verified against `@salesforce/cli` on macOS):
 - Tokens in `~/.sfdx/<username>.json` are **AES-256-GCM**. Stored form is
   `<iv:12 hex chars><ciphertext hex>:<authTag:32 hex chars>`, where the 12-char
   IV string is used as 12 raw ASCII bytes (the GCM nonce).
-- The 32-byte key is a generic password in the macOS Keychain
-  (`service=sfdx, account=local`), used as ASCII bytes (not hex-decoded).
+- The 32-byte key is read from wherever sf stores it for the platform, used as
+  ASCII bytes (not hex-decoded): the macOS Keychain (`security`, service=sfdx,
+  account=local), Linux libsecret (`secret-tool lookup user local domain sfdx`),
+  or — on Windows and as a universal fallback — the file `~/.sfdx/key.json`.
 - On an expired token, refresh via `POST {loginUrl}/services/oauth2/token`
   (`grant_type=refresh_token`, `client_id` from the auth file). Currently the
   refreshed token is kept in memory only (sff does not write back to `~/.sfdx`).
