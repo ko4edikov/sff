@@ -145,11 +145,16 @@ func unpackagedXML(pkg *Package, version string) string {
 	for _, t := range pkg.Types {
 		b.WriteString(`<met:types>`)
 		for _, m := range t.Members {
-			b.WriteString(`<met:members>` + xmlEscape(m) + `</met:members>`)
+			b.WriteString(`<met:members>`)
+			b.WriteString(xmlEscape(m))
+			b.WriteString(`</met:members>`)
 		}
-		b.WriteString(`<met:name>` + xmlEscape(t.Name) + `</met:name>`)
-		b.WriteString(`</met:types>`)
+		b.WriteString(`<met:name>`)
+		b.WriteString(xmlEscape(t.Name))
+		b.WriteString(`</met:name></met:types>`)
 	}
-	b.WriteString(`<met:version>` + version + `</met:version>`)
+	b.WriteString(`<met:version>`)
+	b.WriteString(version)
+	b.WriteString(`</met:version>`)
 	return b.String()
 }
