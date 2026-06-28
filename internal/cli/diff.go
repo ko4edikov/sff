@@ -22,7 +22,7 @@ func newDiffCmd() *cobra.Command {
 		Short: "Diff local metadata against the org",
 		Long: "Fetch one or more components' source from the org (Tooling API) and compare\n" +
 			"with the local copy. Supports Apex (.cls/.trigger/.page/.component) and LWC/Aura\n" +
-			"bundles.\n\n" +
+			"bundles. A directory argument is walked recursively for all supported metadata.\n\n" +
 			"Viewer: --exec '<tmpl>' takes precedence, then $SFF_DIFF; both use {remote}\n" +
 			"and {local} placeholders. With neither, a unified diff is printed to stdout\n" +
 			"and the exit code is 1 when any target differs.",
@@ -53,16 +53,29 @@ func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string) er
 		viewer = os.Getenv("SFF_DIFF")
 	}
 
-	multi := len(args) > 1
-	anyDiff, failed := false, false
+	// Expand each arg (a file, a bundle, or a directory) into concrete targets.
+	var targets []*source.Target
+	failed := false
 	for _, arg := range args {
-		if multi {
-			fmt.Fprintf(os.Stderr, "\n=== %s ===\n", arg)
+		ts, err := source.ResolveAll(arg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "sff: %s: %v\n", arg, err)
+			failed = true
+			continue
 		}
-		differed, err := diffOne(ctx, client, arg, viewer)
+		targets = append(targets, ts...)
+	}
+
+	multi := len(targets) > 1
+	anyDiff := false
+	for _, t := range targets {
+		if multi {
+			fmt.Fprintf(os.Stderr, "\n=== %s ===\n", t.Name)
+		}
+		differed, err := diffTarget(ctx, client, t, viewer)
 		if err != nil {
 			// Report and continue so one bad target doesn't abort the batch.
-			fmt.Fprintf(os.Stderr, "sff: %s: %v\n", arg, err)
+			fmt.Fprintf(os.Stderr, "sff: %s: %v\n", t.Name, err)
 			failed = true
 			continue
 		}
@@ -74,13 +87,10 @@ func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string) er
 	return nil
 }
 
-// diffOne fetches and diffs a single target, returning whether it differs (only
-// meaningful for the built-in unified-diff fallback; viewer mode reports false).
-func diffOne(ctx context.Context, client *sfapi.Client, arg, viewer string) (bool, error) {
-	t, err := source.Resolve(arg)
-	if err != nil {
-		return false, err
-	}
+// diffTarget fetches and diffs a single resolved target, returning whether it
+// differs (only meaningful for the built-in unified-diff fallback; viewer mode
+// reports false).
+func diffTarget(ctx context.Context, client *sfapi.Client, t *source.Target, viewer string) (bool, error) {
 	fmt.Fprintf(os.Stderr, "Querying %s from org…\n", t.Name)
 	files, err := source.Fetch(ctx, client, t)
 	if err != nil {

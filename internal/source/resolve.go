@@ -63,6 +63,59 @@ func Resolve(arg string) (*Target, error) {
 	return nil, fmt.Errorf("not found in project: %s", arg)
 }
 
+// ResolveAll expands arg into one or more targets. A file or an lwc/aura bundle
+// directory yields a single target; a plain directory is walked recursively for
+// all supported flat files and lwc/aura bundles inside it.
+func ResolveAll(arg string) ([]*Target, error) {
+	if info, err := os.Stat(arg); err == nil && info.IsDir() {
+		if t, err := classify(arg); err == nil {
+			return []*Target{t}, nil // the directory is itself a bundle
+		}
+		return walkContainer(arg)
+	}
+	t, err := Resolve(arg)
+	if err != nil {
+		return nil, err
+	}
+	return []*Target{t}, nil
+}
+
+// walkContainer collects every supported flat file and lwc/aura bundle under dir.
+func walkContainer(dir string) ([]*Target, error) {
+	var targets []*Target
+	seen := map[string]bool{}
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if kind, root, name, ok := bundleOf(path); ok {
+			if !seen[root] {
+				seen[root] = true
+				targets = append(targets, &Target{Kind: kind, Name: name, LocalPath: root})
+			}
+			if d.IsDir() {
+				return filepath.SkipDir // whole bundle already captured
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		ext := strings.TrimPrefix(filepath.Ext(path), ".")
+		ft, ok := flatTypes[ext]
+		if !ok || strings.HasSuffix(path, "-meta.xml") {
+			return nil
+		}
+		name := strings.TrimSuffix(filepath.Base(path), "."+ext)
+		targets = append(targets, &Target{Kind: Flat, Name: name, LocalPath: path, Object: ft.object, Field: ft.field})
+		return nil
+	})
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("no supported metadata under %s", dir)
+	}
+	return targets, nil
+}
+
 // classify builds a Target from a concrete path.
 func classify(path string) (*Target, error) {
 	if kind, root, name, ok := bundleOf(path); ok {

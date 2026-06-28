@@ -117,11 +117,14 @@ with the local copy. Supports Apex flat files (`.cls`/`.trigger`/`.page`/
 sff diff MyClass                      # unified diff to stdout, exit 1 if differs
 sff diff force-app/.../lwc/myCmp      # bundle (directory diff)
 sff diff MyClass OtherClass lwc/myCmp # several targets at once
+sff diff classes/                     # a directory: recurses into all metadata
 sff diff MyClass -o pr-dev
 ```
 
-Multiple targets are diffed in sequence; a missing/failed target is reported but
-doesn't abort the rest, and the exit code is 1 if any target differs or fails.
+Each argument may be a file, an lwc/aura bundle, or a **directory** (walked
+recursively for all supported metadata). Multiple targets are diffed in
+sequence; a missing/failed target is reported but doesn't abort the rest, and
+the exit code is 1 if any target differs or fails.
 
 Viewer selection (for a GUI/terminal diff tool instead of stdout):
 
