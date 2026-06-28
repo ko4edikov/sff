@@ -16,34 +16,42 @@ import (
 )
 
 func newQueryCmd() *cobra.Command {
-	var asJSON bool
+	var asJSON, useTooling bool
 	cmd := &cobra.Command{
 		Use:   "query <soql>",
 		Short: "Run a SOQL query",
 		Long:  "Run a SOQL query against an org and print the results as a table (or raw JSON with --json).",
 		Example: `  sff query "SELECT Id, Name FROM Account LIMIT 10"
-  sff query "SELECT Id FROM Contact" -o pr-dev --json`,
+  sff query "SELECT Id FROM Contact" -o pr-dev --json
+  sff query "SELECT Id, Name FROM ApexClass" -t`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			soql := strings.TrimSpace(strings.Join(args, " "))
 			if soql == "" {
 				return fmt.Errorf("a SOQL statement is required")
 			}
-			return runQuery(cmd.Context(), soql, asJSON)
+			return runQuery(cmd.Context(), soql, asJSON, useTooling)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print raw JSON records instead of a table")
+	cmd.Flags().BoolVarP(&useTooling, "use-tooling-api", "t", false, "query the Tooling API (e.g. ApexClass, Flow, CustomField)")
 	return cmd
 }
 
-func runQuery(ctx context.Context, soql string, asJSON bool) error {
+func runQuery(ctx context.Context, soql string, asJSON, useTooling bool) error {
 	org, err := auth.Resolve(targetOrg)
 	if err != nil {
 		return err
 	}
 
+	client := sfapi.New(org)
+	queryFn := client.Query
+	if useTooling {
+		queryFn = client.QueryTooling
+	}
+
 	start := time.Now()
-	records, total, err := sfapi.New(org).Query(ctx, soql)
+	records, total, err := queryFn(ctx, soql)
 	elapsed := time.Since(start)
 	if err != nil {
 		return err

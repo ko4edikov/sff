@@ -19,10 +19,23 @@ type QueryResult struct {
 	Records        []json.RawMessage `json:"records"`
 }
 
-// Query runs a SOQL statement and returns every record, following
-// nextRecordsUrl pagination until the result set is exhausted.
+// Query runs a SOQL statement against the standard REST API.
 func (c *Client) Query(ctx context.Context, soql string) ([]json.RawMessage, int, error) {
-	path := fmt.Sprintf("/services/data/%s/query/?q=%s", c.APIVersion, url.QueryEscape(soql))
+	return c.query(ctx, "query", soql)
+}
+
+// QueryTooling runs a SOQL statement against the Tooling API (the equivalent of
+// `sf data query -t`), used for metadata/setup objects such as ApexClass,
+// Flow, or CustomField.
+func (c *Client) QueryTooling(ctx context.Context, soql string) ([]json.RawMessage, int, error) {
+	return c.query(ctx, "tooling/query", soql)
+}
+
+// query runs a SOQL statement against the given resource ("query" or
+// "tooling/query") and returns every record, following nextRecordsUrl
+// pagination until the result set is exhausted.
+func (c *Client) query(ctx context.Context, resource, soql string) ([]json.RawMessage, int, error) {
+	path := fmt.Sprintf("/services/data/%s/%s/?q=%s", c.APIVersion, resource, url.QueryEscape(soql))
 
 	var all []json.RawMessage
 	total := 0
