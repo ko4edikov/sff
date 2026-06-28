@@ -1,0 +1,13 @@
+# Built binary
+/sff
+
+# Go
+*.test
+*.out
+/dist/
+
+# OS
+.DS_Store
+
+# Local scratch / secrets
+*.local
