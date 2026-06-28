@@ -172,6 +172,10 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
   newline matched to local) so only real differences show.
 - The built-in fallback shells out to `diff -u`/`diff -ru`; viewer mode and the
   org fetch need no external tools. This replaces the old `sf-compare` script.
+- Output is colorized like git (added green, removed red, hunks cyan) when
+  stdout is a terminal; it stays plain when piped/redirected or when `NO_COLOR`
+  is set. When a target matches the org, sff prints `✓ <name>: no differences`
+  (to stderr) and exits 0 — exit 1 means at least one target differs.
 
 ## Roadmap
 

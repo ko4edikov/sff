@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -106,7 +109,11 @@ func diffTarget(ctx context.Context, client *sfapi.Client, t *source.Target, vie
 	if viewer != "" {
 		return false, runViewer(ctx, viewer, remotePath, t.LocalPath)
 	}
-	return runUnifiedDiff(ctx, remotePath, t.LocalPath, t.Kind != source.Flat)
+	differed, err := runUnifiedDiff(ctx, remotePath, t.LocalPath, t.Kind != source.Flat)
+	if err == nil && !differed {
+		fmt.Fprintf(os.Stderr, "✓ %s: no differences\n", t.Name)
+	}
+	return differed, err
 }
 
 // writeRemote materializes the org source under a temp dir and returns the path
@@ -176,13 +183,64 @@ func runUnifiedDiff(ctx context.Context, remote, local string, recursive bool) (
 		flags = "-ru"
 	}
 	cmd := exec.CommandContext(ctx, "diff", flags, remote, local)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, os.Stderr
 	err := cmd.Run()
 	if err == nil {
 		return false, nil // identical
 	}
 	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+		writeColorDiff(os.Stdout, out.Bytes())
 		return true, nil // differences
 	}
 	return false, fmt.Errorf("diff failed: %w", err)
+}
+
+// ANSI colors for the built-in unified diff.
+const (
+	ansiReset = "\x1b[0m"
+	ansiRed   = "\x1b[31m"
+	ansiGreen = "\x1b[32m"
+	ansiCyan  = "\x1b[36m"
+	ansiBold  = "\x1b[1m"
+)
+
+// writeColorDiff prints a unified diff to w, coloring it like git when w is a
+// terminal (added green, removed red, hunks cyan, file headers bold). Output is
+// left plain when piped/redirected or when NO_COLOR is set, keeping it clean for
+// scripts.
+func writeColorDiff(w io.Writer, data []byte) {
+	color := isTerminal(w) && os.Getenv("NO_COLOR") == ""
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // tolerate long lines
+	for sc.Scan() {
+		line := sc.Text()
+		if !color {
+			fmt.Fprintln(w, line)
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"),
+			strings.HasPrefix(line, "diff "):
+			fmt.Fprintln(w, ansiBold+line+ansiReset)
+		case strings.HasPrefix(line, "@@"):
+			fmt.Fprintln(w, ansiCyan+line+ansiReset)
+		case strings.HasPrefix(line, "+"):
+			fmt.Fprintln(w, ansiGreen+line+ansiReset)
+		case strings.HasPrefix(line, "-"):
+			fmt.Fprintln(w, ansiRed+line+ansiReset)
+		default:
+			fmt.Fprintln(w, line)
+		}
+	}
+}
+
+// isTerminal reports whether w is a character device (a TTY).
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
