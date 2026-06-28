@@ -27,12 +27,6 @@ var contentFolders = map[string]bool{
 	"aura":       true,
 }
 
-// unsupportedFolders need a transform sff doesn't do yet (a content-type-driven
-// rename for staticresources); entries here are skipped with a warning.
-var unsupportedFolders = map[string]bool{
-	"staticresources": true,
-}
-
 // ConvertResult reports what a metadata→source conversion produced.
 type ConvertResult struct {
 	Written  []string // source-relative paths written
@@ -52,8 +46,8 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 	}
 
 	byDir := catalogByDir(catalog)
+	srContentTypes := staticResourceContentTypes(zr)
 	res := &ConvertResult{}
-	warned := map[string]bool{}
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() {
 			continue
@@ -64,18 +58,34 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 		}
 		folder := topFolder(name)
 
-		if unsupportedFolders[folder] {
-			if !warned[folder] {
-				warned[folder] = true
-				res.Warnings = append(res.Warnings, fmt.Sprintf(
-					"%s: source-format conversion not supported yet — skipped (use --metadata-format for raw output)", folder))
-			}
-			continue
-		}
-
 		data, err := readZipEntry(f)
 		if err != nil {
 			return res, err
+		}
+
+		// Static resources: the .resource-meta.xml copies across (re-serialized
+		// like other XML), while the .resource binary is renamed by content type
+		// or, for archives, expanded into a directory.
+		if folder == "staticresources" {
+			if strings.HasSuffix(name, ".resource-meta.xml") {
+				if err := writeFile(placeInProject(p, name), normalizeXML(data)); err != nil {
+					return res, err
+				}
+				res.Written = append(res.Written, name)
+				continue
+			}
+			ct := srContentTypes[strings.TrimSuffix(name, ".resource")]
+			parts, err := convertStaticResource(name, data, ct)
+			if err != nil {
+				return res, fmt.Errorf("static resource %s: %w", name, err)
+			}
+			for _, sp := range parts {
+				if err := writeFile(placeInProject(p, sp.rel), sp.data); err != nil {
+					return res, err
+				}
+				res.Written = append(res.Written, sp.rel)
+			}
+			continue
 		}
 
 		// Decomposed types expand one composed file into many source files.

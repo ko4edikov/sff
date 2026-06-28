@@ -123,8 +123,10 @@ Notes:
   byte-for-byte identical to `sf project convert mdapi`. The rules live in a
   vendored `decomposition.json` (embedded via `go:embed`), since these
   source-format conventions aren't reported by `describeMetadata`.
-- **Not yet converted**: `StaticResource` (content-type-driven extension remap)
-  is skipped with a warning; use `--metadata-format` for it.
+- **StaticResource**: the `.resource` binary is renamed to its real extension
+  from the meta's `contentType` (e.g. `Foo.resource` → `Foo.png`/`.js`/`.bin`),
+  and archive resources (`application/zip`/`x-zip-compressed`/`jar`) are expanded
+  into a `Foo/` directory — matching sf's `mime`-based mapping byte-for-byte.
 - Friendly aliases: `apex`→`ApexClass`, `lwc`→`LightningComponentBundle`,
   `aura`→`AuraDefinitionBundle`. Other types pass through verbatim.
 - Components from **managed packages** must be requested with their namespace
@@ -179,9 +181,9 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
 - [x] `sff retrieve` — Metadata API (SOAP), `-m`/`-x`, source-format by default (`--metadata-format` for raw)
 - [x] `sff org list metadata-types` — describeMetadata catalog (cached in `~/.sff`)
 - [x] source-format decomposition for `CustomObject`/`CustomObjectTranslation`/`Bot` (byte-identical to sf)
+- [x] source-format conversion for `StaticResource` (content-type rename + archive expansion)
 - [x] `sff diff` — compare local Apex/LWC/Aura against the org (Tooling API)
 - [ ] `sff deploy` — Metadata API deploy (zip a dir / source passthrough)
-- [ ] source-format conversion for `StaticResource` (extension remap)
 - [ ] `sff apex run`, `sff data get/create/update/delete`
 
 ## Build
