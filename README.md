@@ -106,12 +106,45 @@ Flags may go before or after the SOQL. The client follows `nextRecordsUrl`
 pagination and refreshes the access token once on a 401. End-to-end this runs
 in ~0.3 s vs ~4.5 s for `sf data query`.
 
+## Comparing with the org (`sff diff`)
+
+Fetches a component's source from the org via the Tooling API and compares it
+with the local copy. Supports Apex flat files (`.cls`/`.trigger`/`.page`/
+`.component`) and LWC/Aura bundles. The target may be a path or a bare name
+(searched from the current directory).
+
+```sh
+sff diff MyClass                      # unified diff to stdout, exit 1 if differs
+sff diff force-app/.../lwc/myCmp      # bundle (directory diff)
+sff diff MyClass OtherClass lwc/myCmp # several targets at once
+sff diff MyClass -o pr-dev
+```
+
+Multiple targets are diffed in sequence; a missing/failed target is reported but
+doesn't abort the rest, and the exit code is 1 if any target differs or fails.
+
+Viewer selection (for a GUI/terminal diff tool instead of stdout):
+
+```sh
+export SFF_DIFF='idea diff {remote} {local}'   # e.g. in ~/.zshrc
+sff diff MyClass                               # opens the configured viewer
+sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
+```
+
+- Resolution order: `--exec` → `$SFF_DIFF` → built-in unified diff.
+- `{remote}` is a temp file (flat) or directory (bundle); `{local}` is the
+  working copy. Org content is normalized (CRLF→LF, trailing whitespace, final
+  newline matched to local) so only real differences show.
+- The built-in fallback shells out to `diff -u`/`diff -ru`; viewer mode and the
+  org fetch need no external tools. This replaces the old `sf-compare` script.
+
 ## Roadmap
 
 - [x] `internal/auth` — read `sf` auth files, Keychain decrypt, token refresh
 - [x] `internal/sfapi` — REST client with auto-refresh on 401
 - [x] `sff query "SELECT ..."` — SOQL with pagination, table / `--json` / `--csv` output (~0.3s)
 - [x] `sff retrieve` — Metadata API (SOAP), `-m`/`-x`, metadata-format output
+- [x] `sff diff` — compare local Apex/LWC/Aura against the org (Tooling API)
 - [ ] `sff deploy` — Metadata API deploy (zip a dir / source passthrough)
 - [ ] source↔metadata conversion (CustomObject decomposition)
 - [ ] `sff apex run`, `sff data get/create/update/delete`

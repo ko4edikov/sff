@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -15,6 +16,10 @@ var version = "dev"
 
 func main() {
 	if err := cli.Execute(version); err != nil {
+		// A bare exit-code request (e.g. `sff diff` files-differ) exits quietly.
+		if exit, ok := errors.AsType[*cli.ExitError](err); ok {
+			os.Exit(exit.Code)
+		}
 		fmt.Fprintln(os.Stderr, "sff:", err)
 		os.Exit(1)
 	}

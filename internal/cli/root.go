@@ -2,6 +2,8 @@
 package cli
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +28,7 @@ func newRootCmd(version string) *cobra.Command {
 	root.AddCommand(newQueryCmd())
 	root.AddCommand(newOrgCmd())
 	root.AddCommand(newRetrieveCmd())
+	root.AddCommand(newDiffCmd())
 	return root
 }
 
@@ -33,3 +36,9 @@ func newRootCmd(version string) *cobra.Command {
 func Execute(version string) error {
 	return newRootCmd(version).Execute()
 }
+
+// ExitError signals a specific process exit code without an error message —
+// used e.g. by `sff diff` to exit 1 when files differ (like `git diff`).
+type ExitError struct{ Code int }
+
+func (e *ExitError) Error() string { return fmt.Sprintf("exit %d", e.Code) }

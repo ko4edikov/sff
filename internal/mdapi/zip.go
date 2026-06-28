@@ -22,7 +22,12 @@ func Unzip(data []byte, destDir string) ([]string, error) {
 		return nil, fmt.Errorf("create %s: %w", destDir, err)
 	}
 
-	cleanDest := filepath.Clean(destDir)
+	// Resolve to an absolute path so the zip-slip guard works for relative
+	// dests like "." (where filepath.Clean would leave a bare ".").
+	cleanDest, err := filepath.Abs(destDir)
+	if err != nil {
+		return nil, err
+	}
 	var written []string
 	for _, f := range zr.File {
 		target := filepath.Join(cleanDest, filepath.FromSlash(f.Name))
