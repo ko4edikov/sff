@@ -37,6 +37,7 @@ func newRetrieveCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&outputDir, "output-dir", "d", "./mdapi", "directory to unzip the retrieved metadata into")
 	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "Metadata API version")
 	cmd.MarkFlagsMutuallyExclusive("metadata", "manifest")
+	addTargetOrgFlag(cmd)
 	return cmd
 }
 

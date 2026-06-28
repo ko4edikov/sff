@@ -49,6 +49,7 @@ func newQueryCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&outFile, "out-file", "f", "", "write the result to a file instead of stdout")
 	cmd.Flags().BoolVarP(&useTooling, "use-tooling-api", "t", false, "query the Tooling API (e.g. ApexClass, Flow, CustomField)")
 	cmd.MarkFlagsMutuallyExclusive("json", "csv")
+	addTargetOrgFlag(cmd)
 	return cmd
 }
 

@@ -37,6 +37,7 @@ func newDiffCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&execTmpl, "exec", "", "diff viewer command template using {remote}/{local}")
 	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "Tooling API version")
+	addTargetOrgFlag(cmd)
 	return cmd
 }
 

@@ -7,9 +7,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// targetOrg is the shared --target-org/-o persistent flag, inherited by every
-// subcommand. Empty means "use the configured default org".
+// targetOrg holds the value of the --target-org/-o flag for whichever command
+// is running. It's added only to commands that act on a single org (not, say,
+// `org list`). Empty means "use the configured default org".
 var targetOrg string
+
+// addTargetOrgFlag registers the -o/--target-org flag on a command, bound to
+// the shared targetOrg var.
+func addTargetOrgFlag(cmd *cobra.Command) {
+	cmd.Flags().StringVarP(&targetOrg, "target-org", "o", "",
+		"target org (alias or username; default: the configured org)")
+}
 
 // newRootCmd builds the root command and attaches all subcommands.
 func newRootCmd(version string) *cobra.Command {
@@ -22,9 +30,6 @@ func newRootCmd(version string) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.PersistentFlags().StringVarP(&targetOrg, "target-org", "o", "",
-		"target org (alias or username; default: the configured org)")
-
 	root.AddCommand(newQueryCmd())
 	root.AddCommand(newOrgCmd())
 	root.AddCommand(newRetrieveCmd())

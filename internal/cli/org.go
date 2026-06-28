@@ -102,6 +102,7 @@ func newOrgDisplayCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "refresh the access token before displaying")
 	cmd.Flags().BoolVar(&showToken, "show-token", false, "print the full access token (sensitive)")
+	addTargetOrgFlag(cmd)
 	return cmd
 }
 
