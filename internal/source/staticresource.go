@@ -87,6 +87,22 @@ func staticResourceContentTypes(zr *zip.Reader) map[string]string {
 }
 
 var contentTypeRe = regexp.MustCompile(`<contentType>([^<]*)</contentType>`)
+var cacheControlRe = regexp.MustCompile(`<cacheControl>([^<]*)</cacheControl>`)
+
+// MetaContentType returns the <contentType> declared in a static resource's
+// .resource-meta.xml, defaulting to application/octet-stream when absent.
+func MetaContentType(metaXML []byte) string { return staticContentType(metaXML) }
+
+// MetaCacheControl returns the <cacheControl> (Public or Private) declared in a
+// static resource's .resource-meta.xml, defaulting to Private when absent.
+func MetaCacheControl(metaXML []byte) string {
+	if m := cacheControlRe.FindSubmatch(metaXML); m != nil {
+		if cc := strings.TrimSpace(string(m[1])); cc != "" {
+			return cc
+		}
+	}
+	return "Private"
+}
 
 // staticContentType reads the <contentType> from a .resource-meta.xml, defaulting
 // to application/octet-stream when absent (as SDR does).

@@ -4,6 +4,7 @@
 package sfapi
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -52,6 +53,40 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader) (*
 		return nil, fmt.Errorf("token refresh after 401: %w", rerr)
 	}
 	return c.send(ctx, method, path, nil)
+}
+
+// requestJSON sends method to path with an optional JSON body and returns the
+// response status and body bytes. Unlike do, it can replay the request after a
+// 401 refresh because it holds the body as bytes (do refuses to re-send a
+// non-nil body). A nil body is sent without a Content-Type.
+func (c *Client) requestJSON(ctx context.Context, method, path string, body []byte) (int, []byte, error) {
+	send := func() (*http.Response, error) {
+		var r io.Reader
+		if body != nil {
+			r = bytes.NewReader(body)
+		}
+		return c.send(ctx, method, path, r)
+	}
+
+	resp, err := send()
+	if err != nil {
+		return 0, nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		if rerr := c.Org.Refresh(ctx); rerr != nil {
+			return 0, nil, fmt.Errorf("token refresh after 401: %w", rerr)
+		}
+		if resp, err = send(); err != nil {
+			return 0, nil, err
+		}
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, data, nil
 }
 
 func (c *Client) send(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {

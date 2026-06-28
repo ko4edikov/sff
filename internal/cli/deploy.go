@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -30,7 +31,7 @@ var testLevels = map[string]string{
 func newDeployCmd() *cobra.Command {
 	var sourceDir, manifest, projectDir, testLevel, apiVersion string
 	var metadata, tests []string
-	var checkOnly, dryRun, ignoreWarnings, ignoreErrors, metadataFormat bool
+	var checkOnly, dryRun, ignoreWarnings, ignoreErrors, metadataFormat, tooling bool
 	var wait int
 	cmd := &cobra.Command{
 		Use:   "deploy",
@@ -44,14 +45,18 @@ func newDeployCmd() *cobra.Command {
 			"reverse of sff retrieve --metadata-format. Use --check-only to validate without\n" +
 			"saving, or --dry-run to build the package without deploying. --ignore-errors keeps\n" +
 			"successfully deployed components instead of rolling back on failure, and -w/--wait\n" +
-			"bounds how long to wait before returning while the deploy keeps running server-side.",
+			"bounds how long to wait before returning while the deploy keeps running server-side.\n" +
+			"Use --tooling for a fast deploy via the Tooling API (ApexClass/ApexTrigger/\n" +
+			"ApexPage/ApexComponent — which must already exist in the org — plus StaticResource)\n" +
+			"— much quicker than a Metadata API round-trip for the daily edit loop.",
 		Example: `  sff deploy -d force-app/main/default
   sff deploy -m ApexClass:MyClass -m LWC:myCmp
   sff deploy -x manifest/package.xml --check-only
   sff deploy -d force-app -l RunSpecifiedTests --tests MyTest --tests OtherTest
   sff deploy -d ./mdapi --metadata-format
   sff deploy -m ApexClass --dry-run
-  sff deploy -d force-app --ignore-errors -w 10`,
+  sff deploy -d force-app --ignore-errors -w 10
+  sff deploy -m ApexClass:MyClass --tooling`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if sourceDir == "" && len(metadata) == 0 && manifest == "" {
@@ -60,12 +65,19 @@ func newDeployCmd() *cobra.Command {
 			if metadataFormat && sourceDir == "" {
 				return fmt.Errorf("--metadata-format requires -d pointing at a metadata-format directory")
 			}
+			if wait < 0 {
+				return fmt.Errorf("--wait must be zero or positive (minutes)")
+			}
+			if tooling {
+				if bad := incompatibleWithTooling(metadataFormat, ignoreWarnings, ignoreErrors, testLevel, tests); bad != "" {
+					return fmt.Errorf("--tooling cannot be combined with %s", bad)
+				}
+				sel := deploySelection{sourceDir: sourceDir, metadata: metadata, manifest: manifest, projectDir: projectDir}
+				return runToolingDeploy(cmd.Context(), sel, apiVersion, checkOnly, dryRun, time.Duration(wait)*time.Minute)
+			}
 			level, err := resolveTestLevel(testLevel, tests)
 			if err != nil {
 				return err
-			}
-			if wait < 0 {
-				return fmt.Errorf("--wait must be zero or positive (minutes)")
 			}
 			opts := mdapi.DeployOptions{
 				CheckOnly:       checkOnly,
@@ -87,6 +99,7 @@ func newDeployCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&tests, "tests", nil, "Apex test class to run (repeatable; requires -l RunSpecifiedTests)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "build the package and print the manifest without deploying")
 	cmd.Flags().BoolVar(&metadataFormat, "metadata-format", false, "deploy the -d directory as-is (already metadata format with package.xml)")
+	cmd.Flags().BoolVar(&tooling, "tooling", false, "fast deploy via the Tooling API (existing Apex/VF + static resources)")
 	cmd.Flags().BoolVar(&ignoreWarnings, "ignore-warnings", false, "succeed even if the deploy reports warnings")
 	cmd.Flags().BoolVar(&ignoreErrors, "ignore-errors", false, "don't roll back on failure; keep components that deployed successfully")
 	cmd.Flags().IntVarP(&wait, "wait", "w", 0, "minutes to wait for the deploy to finish (0 = wait indefinitely)")
@@ -266,6 +279,230 @@ func printDeployFailures(res *mdapi.DeployResult) {
 	}
 	for _, t := range res.TestFailures {
 		fmt.Fprintf(os.Stderr, "  test %s.%s — %s\n", t.Name, t.MethodName, t.Message)
+	}
+}
+
+// toolingSupported is the set of metadata types --tooling can deploy.
+var toolingSupported = map[string]bool{
+	"ApexClass":      true,
+	"ApexTrigger":    true,
+	"ApexPage":       true,
+	"ApexComponent":  true,
+	"StaticResource": true,
+}
+
+// incompatibleWithTooling returns a description of the first flag that cannot be
+// used with --tooling, or "" if the combination is valid.
+func incompatibleWithTooling(metadataFormat, ignoreWarnings, ignoreErrors bool, testLevel string, tests []string) string {
+	switch {
+	case metadataFormat:
+		return "--metadata-format"
+	case ignoreWarnings:
+		return "--ignore-warnings"
+	case ignoreErrors:
+		return "--ignore-errors"
+	case testLevel != "" || len(tests) > 0:
+		return "--test-level/--tests (the Tooling API does not run tests)"
+	}
+	return ""
+}
+
+// runToolingDeploy resolves the selection to Apex/Visualforce bodies and pushes
+// them through the Tooling API container flow.
+func runToolingDeploy(ctx context.Context, sel deploySelection, apiVersion string, checkOnly, dryRun bool, wait time.Duration) error {
+	org, err := auth.Resolve(targetOrg)
+	if err != nil {
+		return err
+	}
+	client := sfapi.New(org)
+	if v := strings.TrimPrefix(apiVersion, "v"); v != "" {
+		client.APIVersion = "v" + v
+	}
+
+	in, skipped, err := resolveToolingComponents(sel, strings.TrimPrefix(client.APIVersion, "v"))
+	if err != nil {
+		return err
+	}
+	for _, s := range skipped {
+		fmt.Fprintf(os.Stderr, "skipping %s (not deployable via --tooling)\n", s)
+	}
+	total := len(in.Apex) + len(in.Static)
+	if total == 0 {
+		return fmt.Errorf("no Apex/Visualforce/static-resource components to deploy via --tooling")
+	}
+	if checkOnly && len(in.Static) > 0 {
+		return fmt.Errorf("--check-only cannot be used with static resources (the Tooling API has no validate-only mode for them); drop --check-only or deploy them via the Metadata API")
+	}
+
+	if dryRun {
+		fmt.Printf("would deploy %d component(s) via the Tooling API:\n", total)
+		for _, c := range in.Apex {
+			fmt.Printf("  %s:%s\n", c.Type, c.Name)
+		}
+		for _, s := range in.Static {
+			fmt.Printf("  StaticResource:%s\n", s.Name)
+		}
+		return nil
+	}
+
+	if wait > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, wait)
+		defer cancel()
+	}
+	verb := "deploying"
+	if checkOnly {
+		verb = "validating"
+	}
+	start := time.Now()
+	res, err := client.ToolingDeploy(ctx, in, checkOnly, func(state string) {
+		fmt.Fprintf(os.Stderr, "\r%s… %s", verb, state)
+	})
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintf(os.Stderr, "timed out after %s; the tooling deploy may still be running in %s\n", fmtDuration(wait), org.Username)
+			return &ExitError{Code: 1}
+		}
+		printCompileErrors(res)
+		return &ExitError{Code: 1}
+	}
+
+	noun := "deployed"
+	if checkOnly {
+		noun = "validated"
+	}
+	fmt.Printf("%s %d component(s) to %s in %s\n", noun, len(res.Succeeded), org.Username, fmtDuration(time.Since(start)))
+	return nil
+}
+
+// resolveToolingComponents turns the selection into a ToolingDeployInput by
+// recomposing it to metadata-format entries (reusing the same conversion as the
+// Metadata API path, including static-resource re-archiving) and routing each
+// entry to its Tooling mechanism. A -d directory contributes every supported
+// component and reports the rest as skipped; -m/-x reject unsupported types and
+// wildcards up front.
+func resolveToolingComponents(sel deploySelection, version string) (in sfapi.ToolingDeployInput, skipped []string, err error) {
+	rec, err := recomposeToolingEntries(sel, version)
+	if err != nil {
+		return sfapi.ToolingDeployInput{}, nil, err
+	}
+
+	staticBody := map[string][]byte{}
+	staticMeta := map[string][]byte{}
+	skip := map[string]bool{}
+	for p, data := range rec.Entries {
+		folder, _, _ := strings.Cut(p, "/")
+		base := path.Base(p)
+		switch folder {
+		case "classes":
+			if strings.HasSuffix(base, ".cls") {
+				in.Apex = append(in.Apex, sfapi.ToolingComponent{Type: "ApexClass", Name: strings.TrimSuffix(base, ".cls"), Body: string(data)})
+			}
+		case "triggers":
+			if strings.HasSuffix(base, ".trigger") {
+				in.Apex = append(in.Apex, sfapi.ToolingComponent{Type: "ApexTrigger", Name: strings.TrimSuffix(base, ".trigger"), Body: string(data)})
+			}
+		case "pages":
+			if strings.HasSuffix(base, ".page") {
+				in.Apex = append(in.Apex, sfapi.ToolingComponent{Type: "ApexPage", Name: strings.TrimSuffix(base, ".page"), Body: string(data)})
+			}
+		case "components":
+			if strings.HasSuffix(base, ".component") {
+				in.Apex = append(in.Apex, sfapi.ToolingComponent{Type: "ApexComponent", Name: strings.TrimSuffix(base, ".component"), Body: string(data)})
+			}
+		case "staticresources":
+			switch {
+			case strings.HasSuffix(base, ".resource"):
+				staticBody[strings.TrimSuffix(base, ".resource")] = data
+			case strings.HasSuffix(base, ".resource-meta.xml"):
+				staticMeta[strings.TrimSuffix(base, ".resource-meta.xml")] = data
+			}
+		default:
+			skip[skipLabel(p)] = true
+		}
+	}
+
+	for name, body := range staticBody {
+		ct, cc := "application/octet-stream", "Private"
+		if meta := staticMeta[name]; meta != nil {
+			ct = source.MetaContentType(meta)
+			cc = source.MetaCacheControl(meta)
+		}
+		in.Static = append(in.Static, sfapi.ToolingStaticResource{Name: name, ContentType: ct, CacheControl: cc, Body: body})
+	}
+
+	sort.Slice(in.Apex, func(i, j int) bool { return in.Apex[i].Name < in.Apex[j].Name })
+	sort.Slice(in.Static, func(i, j int) bool { return in.Static[i].Name < in.Static[j].Name })
+	for s := range skip {
+		skipped = append(skipped, s)
+	}
+	sort.Strings(skipped)
+	return in, skipped, nil
+}
+
+// recomposeToolingEntries recomposes the selection to metadata-format entries
+// with no describe catalog (heuristics only, so resolution stays offline). For
+// -m/-x it first rejects unsupported types and wildcards.
+func recomposeToolingEntries(sel deploySelection, version string) (*source.RecomposeResult, error) {
+	if sel.sourceDir != "" {
+		return source.RecomposeDir(sel.sourceDir, version, nil)
+	}
+
+	var pkg *mdapi.Package
+	var err error
+	if sel.manifest != "" {
+		pkg, err = mdapi.LoadManifest(sel.manifest)
+	} else {
+		pkg, err = mdapi.ParseSpecifiers(sel.metadata, version)
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range pkg.Types {
+		if !toolingSupported[t.Name] {
+			return nil, fmt.Errorf("--tooling does not support %s (only ApexClass, ApexTrigger, ApexPage, ApexComponent, StaticResource)", t.Name)
+		}
+		for _, m := range t.Members {
+			if m == "*" {
+				return nil, fmt.Errorf("--tooling needs explicit names; %s wildcard is not supported", t.Name)
+			}
+		}
+	}
+
+	start := sel.projectDir
+	if start == "" {
+		start = "."
+	}
+	proj, err := project.Find(start)
+	if err != nil {
+		return nil, err
+	}
+	return source.RecomposeMembers(proj, pkg, version, nil)
+}
+
+// skipLabel summarizes an unsupported entry path as "folder/name" for reporting.
+func skipLabel(p string) string {
+	segs := strings.Split(p, "/")
+	if len(segs) >= 2 {
+		return segs[0] + "/" + segs[1]
+	}
+	return segs[0]
+}
+
+// printCompileErrors writes Tooling deploy compiler failures to stderr.
+func printCompileErrors(res *sfapi.ToolingDeployResult) {
+	if res == nil {
+		return
+	}
+	errs := append([]sfapi.CompileError(nil), res.Errors...)
+	sort.Slice(errs, func(i, j int) bool { return errs[i].Component < errs[j].Component })
+	for _, e := range errs {
+		loc := e.Component
+		if e.Line > 0 {
+			loc = fmt.Sprintf("%s (line %d)", loc, e.Line)
+		}
+		fmt.Fprintf(os.Stderr, "  %s — %s\n", loc, e.Problem)
 	}
 }
 

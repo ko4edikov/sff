@@ -177,6 +177,7 @@ sff deploy -m ApexClass                                    # bare type = all mem
 sff deploy -x manifest/package.xml --check-only            # from a manifest, validate only
 sff deploy -d force-app -l RunSpecifiedTests --tests MyTest # run specific Apex tests
 sff deploy -d ./mdapi --metadata-format                    # deploy a metadata-format dir as-is
+sff deploy -m ApexClass:MyClass --tooling                  # fast Apex/VF deploy via the Tooling API
 sff deploy -m ApexClass:MyClass --dry-run                  # build & print the manifest, don't deploy
 ```
 
@@ -197,6 +198,17 @@ Notes:
   as-is — it must already be in metadata format with a `package.xml` at its root
   (the reverse of `sff retrieve --metadata-format`). The existing manifest is
   used verbatim rather than rebuilt.
+- **`--tooling`** is a fast path for the daily edit loop, deploying via the
+  Tooling API instead of a Metadata API round-trip. Apex/Visualforce
+  (`ApexClass`/`ApexTrigger`/`ApexPage`/`ApexComponent`) go through a
+  `MetadataContainer` and **must already exist in the org** (referenced by id);
+  `StaticResource`s are upserted directly. `-d` deploys the supported components
+  under a dir and skips the rest, while `-m`/`-x` reject unsupported types and
+  wildcards. `--check-only` works for Apex/VF but is rejected when static
+  resources are in the selection (the Tooling API has no validate-only mode for
+  them). `--metadata-format`, `--ignore-errors`, `--ignore-warnings`, and
+  `--test-level`/`--tests` do not apply and are rejected. (Aura and LWC are not
+  yet supported here — use a regular Metadata API deploy.)
 - `--check-only` validates without saving; `--test-level` (`NoTestRun`,
   `RunSpecifiedTests` with `--tests`, `RunLocalTests`, `RunAllTestsInOrg`)
   controls Apex tests; `--dry-run` builds the package and prints the manifest
@@ -258,7 +270,7 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
 - [x] source-format decomposition for `CustomObject`/`CustomObjectTranslation`/`Bot` (byte-identical to sf)
 - [x] source-format conversion for `StaticResource` (content-type rename + archive expansion)
 - [x] `sff diff` — compare local Apex/LWC/Aura against the org (Tooling API)
-- [x] `sff deploy` — Metadata API deploy from source format: `-d` dir / `-m`/`-x` members (recompose + `package.xml`), `--check-only`/`--test-level`/`--dry-run`/`--metadata-format`
+- [x] `sff deploy` — Metadata API deploy from source format: `-d` dir / `-m`/`-x` members (recompose + `package.xml`), `--check-only`/`--test-level`/`--dry-run`/`--metadata-format`/`--ignore-errors`/`--wait`; `--tooling` fast Apex/VF deploy via the Tooling API
 - [ ] `sff apex run`, `sff data get/create/update/delete`
 
 ## Build
