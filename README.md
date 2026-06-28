@@ -163,20 +163,28 @@ in ~0.3 s vs ~4.5 s for `sf data query`.
 
 ## Deploying metadata (`sff deploy`)
 
-The reverse of `sff retrieve`: recomposes a source-format directory into a
+The reverse of `sff retrieve`: recomposes source-format metadata into a
 metadata-format package and deploys it via the Metadata API (SOAP `deploy` +
-`checkDeployStatus`). Decomposed types are folded back into one file, static
-resources are re-archived, and the `package.xml` manifest is built from the
-files found.
+`checkDeployStatus`). Select what to deploy with `-d` (a whole source
+directory), `-m Type:Name` specifiers, or `-x package.xml`. Decomposed types are
+folded back into one file, static resources are re-archived, and the
+`package.xml` manifest is built from the files found.
 
 ```sh
-sff deploy -d force-app/main/default                       # deploy a source dir
-sff deploy -d force-app --check-only                        # validate only (no save)
+sff deploy -d force-app/main/default                       # a whole source dir
+sff deploy -m ApexClass:MyClass -m LWC:myCmp               # specific components
+sff deploy -m ApexClass                                    # bare type = all members (*)
+sff deploy -x manifest/package.xml --check-only            # from a manifest, validate only
 sff deploy -d force-app -l RunSpecifiedTests --tests MyTest # run specific Apex tests
-sff deploy -d force-app --dry-run                           # build & print the manifest, don't deploy
+sff deploy -m ApexClass:MyClass --dry-run                  # build & print the manifest, don't deploy
 ```
 
 Notes:
+- **Selection**: `-d` recomposes everything under a directory; `-m`/`-x` resolve
+  the named members against the sfdx project (found by searching up from the
+  current directory, override with `--project-dir`). A bare `-m ApexClass`
+  selects all of that type (`*`). Members with no local files are warned about,
+  not fatal.
 - **Recomposition** is the inverse of retrieve's conversion: `CustomObject`/
   `CustomObjectTranslation`/`Bot` children are folded back into the composed
   file, and `StaticResource` directories are re-zipped (single-file resources
@@ -245,7 +253,7 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
 - [x] source-format decomposition for `CustomObject`/`CustomObjectTranslation`/`Bot` (byte-identical to sf)
 - [x] source-format conversion for `StaticResource` (content-type rename + archive expansion)
 - [x] `sff diff` — compare local Apex/LWC/Aura against the org (Tooling API)
-- [x] `sff deploy` — Metadata API deploy of a source-format dir (recompose + `package.xml`), `--check-only`/`--test-level`/`--dry-run`
+- [x] `sff deploy` — Metadata API deploy from source format: `-d` dir / `-m`/`-x` members (recompose + `package.xml`), `--check-only`/`--test-level`/`--dry-run`
 - [ ] `sff apex run`, `sff data get/create/update/delete`
 
 ## Build

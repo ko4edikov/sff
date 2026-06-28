@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/ko4edikov/sff/internal/mdapi"
+	"github.com/ko4edikov/sff/internal/project"
 )
 
 // RecomposeResult is the outcome of a source→metadata recompose: the
@@ -72,16 +73,8 @@ func RecomposeDir(root, version string, catalog *mdapi.DescribeResult) (*Recompo
 		return nil, fmt.Errorf("%s is not a directory", root)
 	}
 
-	byDir := catalogByDir(catalog)
-	known := knownDirs(byDir)
-
-	r := &recomposer{
-		byDir:      byDir,
-		entries:    map[string][]byte{},
-		members:    map[string]map[string]bool{},
-		decomposed: map[string]*decompGroup{},
-		statics:    map[string]*staticGroup{},
-	}
+	r := newRecomposer(catalog)
+	known := knownDirs(r.byDir)
 
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -96,30 +89,83 @@ func RecomposeDir(root, version string, catalog *mdapi.DescribeResult) (*Recompo
 		if idx < 0 {
 			return nil // outside any recognized metadata folder; ignore
 		}
-		metaRel := strings.Join(segs[idx:], "/")
-		folder := segs[idx]
-
 		data, derr := os.ReadFile(p)
 		if derr != nil {
 			return fmt.Errorf("read %s: %w", rel, derr)
 		}
-		return r.route(folder, metaRel, segs[idx:], data)
+		r.ingest(strings.Join(segs[idx:], "/"), data)
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-
-	if err := r.flushDecomposed(); err != nil {
+	if err := r.flush(); err != nil {
 		return nil, err
 	}
-	if err := r.flushStatics(); err != nil {
-		return nil, err
-	}
-
 	if len(r.entries) == 0 {
 		return nil, fmt.Errorf("no deployable metadata found under %s", root)
 	}
 	return &RecomposeResult{Entries: r.entries, Package: r.buildPackage(version), Warnings: r.warnings}, nil
+}
+
+// RecomposeMembers resolves the components named in pkg to their source files
+// under proj, recomposes them, and returns the metadata-format entries plus a
+// manifest of what was actually found. Members with no local files are reported
+// as warnings (not errors), mirroring how a manifest may over-list.
+func RecomposeMembers(proj *project.Project, pkg *mdapi.Package, version string, catalog *mdapi.DescribeResult) (*RecomposeResult, error) {
+	r := newRecomposer(catalog)
+	byType := byTypeName(catalog)
+	roots := memberRoots(proj)
+
+	for _, t := range pkg.Types {
+		for _, member := range t.Members {
+			files, err := resolveMemberFiles(roots, t.Name, member, byType)
+			if err != nil {
+				return nil, err
+			}
+			if len(files) == 0 {
+				r.warnings = append(r.warnings, fmt.Sprintf("%s:%s not found in project", t.Name, member))
+				continue
+			}
+			for _, f := range files {
+				r.ingest(f.metaRel, f.data)
+			}
+		}
+	}
+
+	if err := r.flush(); err != nil {
+		return nil, err
+	}
+	if len(r.entries) == 0 {
+		return nil, fmt.Errorf("none of the requested metadata was found under %s", proj.Root)
+	}
+	return &RecomposeResult{Entries: r.entries, Package: r.buildPackage(version), Warnings: r.warnings}, nil
+}
+
+// newRecomposer builds an empty recomposer keyed off the describe catalog.
+func newRecomposer(catalog *mdapi.DescribeResult) *recomposer {
+	return &recomposer{
+		byDir:      catalogByDir(catalog),
+		entries:    map[string][]byte{},
+		members:    map[string]map[string]bool{},
+		decomposed: map[string]*decompGroup{},
+		statics:    map[string]*staticGroup{},
+	}
+}
+
+// ingest routes one source file, identified by its metadata-relative path (which
+// starts at the type directory, e.g. "classes/Foo.cls").
+func (r *recomposer) ingest(metaRel string, data []byte) {
+	segs := strings.Split(metaRel, "/")
+	r.route(segs[0], metaRel, segs, data)
+}
+
+// flush composes all buffered decomposed components and static resources.
+func (r *recomposer) flush() error {
+	if err := r.flushDecomposed(); err != nil {
+		return err
+	}
+	return r.flushStatics()
 }
 
 // recomposer accumulates state across the directory walk.

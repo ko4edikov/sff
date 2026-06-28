@@ -12,6 +12,7 @@ import (
 
 	"github.com/ko4edikov/sff/internal/auth"
 	"github.com/ko4edikov/sff/internal/mdapi"
+	"github.com/ko4edikov/sff/internal/project"
 	"github.com/ko4edikov/sff/internal/sfapi"
 	"github.com/ko4edikov/sff/internal/source"
 )
@@ -26,25 +27,27 @@ var testLevels = map[string]string{
 }
 
 func newDeployCmd() *cobra.Command {
-	var sourceDir, testLevel, apiVersion string
-	var tests []string
+	var sourceDir, manifest, projectDir, testLevel, apiVersion string
+	var metadata, tests []string
 	var checkOnly, dryRun, ignoreWarnings bool
 	cmd := &cobra.Command{
 		Use:   "deploy",
 		Short: "Deploy source-format metadata to an org (Metadata API)",
-		Long: "Recompose a source-format directory into a metadata-format package and\n" +
-			"deploy it via the Metadata API (the reverse of sff retrieve). Decomposed\n" +
-			"types (objects, …) are re-composed and static resources are re-archived; a\n" +
-			"package.xml manifest is built from the files found. Use --check-only to\n" +
-			"validate without saving, or --dry-run to build the package without deploying.",
+		Long: "Recompose source-format metadata into a metadata-format package and deploy\n" +
+			"it via the Metadata API (the reverse of sff retrieve). Select what to deploy\n" +
+			"with -d (a whole source directory), -m Type:Name specifiers, or -x package.xml;\n" +
+			"-m/-x resolve members from the sfdx project. Decomposed types (objects, …) are\n" +
+			"re-composed and static resources are re-archived. Use --check-only to validate\n" +
+			"without saving, or --dry-run to build the package without deploying.",
 		Example: `  sff deploy -d force-app/main/default
-  sff deploy -d force-app --check-only
+  sff deploy -m ApexClass:MyClass -m LWC:myCmp
+  sff deploy -x manifest/package.xml --check-only
   sff deploy -d force-app -l RunSpecifiedTests --tests MyTest --tests OtherTest
-  sff deploy -d force-app --dry-run`,
+  sff deploy -m ApexClass --dry-run`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if sourceDir == "" {
-				return fmt.Errorf("specify a source directory with -d")
+			if sourceDir == "" && len(metadata) == 0 && manifest == "" {
+				return fmt.Errorf("specify what to deploy with -d, -m, or -x")
 			}
 			level, err := resolveTestLevel(testLevel, tests)
 			if err != nil {
@@ -57,18 +60,31 @@ func newDeployCmd() *cobra.Command {
 				TestLevel:       level,
 				RunTests:        tests,
 			}
-			return runDeploy(cmd.Context(), sourceDir, apiVersion, dryRun, opts)
+			sel := deploySelection{sourceDir: sourceDir, metadata: metadata, manifest: manifest, projectDir: projectDir}
+			return runDeploy(cmd.Context(), sel, apiVersion, dryRun, opts)
 		},
 	}
 	cmd.Flags().StringVarP(&sourceDir, "source-dir", "d", "", "source-format directory to deploy")
+	cmd.Flags().StringArrayVarP(&metadata, "metadata", "m", nil, "metadata to deploy as Type or Type:Name (repeatable)")
+	cmd.Flags().StringVarP(&manifest, "manifest", "x", "", "path to a package.xml listing what to deploy")
+	cmd.Flags().StringVar(&projectDir, "project-dir", "", "sfdx project to resolve -m/-x members from (default: search up from cwd)")
 	cmd.Flags().BoolVarP(&checkOnly, "check-only", "c", false, "validate the deploy without saving changes")
 	cmd.Flags().StringVarP(&testLevel, "test-level", "l", "", "NoTestRun|RunSpecifiedTests|RunLocalTests|RunAllTestsInOrg")
 	cmd.Flags().StringArrayVar(&tests, "tests", nil, "Apex test class to run (repeatable; requires -l RunSpecifiedTests)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "build the package and print the manifest without deploying")
 	cmd.Flags().BoolVar(&ignoreWarnings, "ignore-warnings", false, "succeed even if the deploy reports warnings")
 	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "Metadata API version")
+	cmd.MarkFlagsMutuallyExclusive("source-dir", "metadata", "manifest")
 	addTargetOrgFlag(cmd)
 	return cmd
+}
+
+// deploySelection captures the mutually exclusive ways to choose what to deploy.
+type deploySelection struct {
+	sourceDir  string   // -d: a whole source-format directory
+	metadata   []string // -m: Type or Type:Name specifiers
+	manifest   string   // -x: a package.xml path
+	projectDir string   // where to resolve -m/-x members from
 }
 
 // resolveTestLevel canonicalizes the --test-level value and validates --tests usage.
@@ -90,7 +106,7 @@ func resolveTestLevel(level string, tests []string) (string, error) {
 	return canon, nil
 }
 
-func runDeploy(ctx context.Context, sourceDir, apiVersion string, dryRun bool, opts mdapi.DeployOptions) error {
+func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryRun bool, opts mdapi.DeployOptions) error {
 	org, err := auth.Resolve(targetOrg)
 	if err != nil {
 		return err
@@ -102,7 +118,7 @@ func runDeploy(ctx context.Context, sourceDir, apiVersion string, dryRun bool, o
 	// non-fatal — recompose falls back to its built-in heuristics.
 	catalog, _, _ := client.DescribeMetadataCached(ctx, false)
 
-	rec, err := source.RecomposeDir(sourceDir, client.APIVersion, catalog)
+	rec, err := recomposeSelection(sel, client.APIVersion, catalog)
 	if err != nil {
 		return err
 	}
@@ -152,6 +168,35 @@ func runDeploy(ctx context.Context, sourceDir, apiVersion string, dryRun bool, o
 		fmt.Printf("ran %d test(s), %d failed\n", res.NumberTestsCompleted, res.NumberTestErrors)
 	}
 	return nil
+}
+
+// recomposeSelection turns the chosen selection into metadata-format entries and
+// a manifest: a whole directory for -d, or project-resolved members for -m/-x.
+func recomposeSelection(sel deploySelection, version string, catalog *mdapi.DescribeResult) (*source.RecomposeResult, error) {
+	if sel.sourceDir != "" {
+		return source.RecomposeDir(sel.sourceDir, version, catalog)
+	}
+
+	var pkg *mdapi.Package
+	var err error
+	if sel.manifest != "" {
+		pkg, err = mdapi.LoadManifest(sel.manifest)
+	} else {
+		pkg, err = mdapi.ParseSpecifiers(sel.metadata, version)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	start := sel.projectDir
+	if start == "" {
+		start = "."
+	}
+	proj, err := project.Find(start)
+	if err != nil {
+		return nil, err
+	}
+	return source.RecomposeMembers(proj, pkg, version, catalog)
 }
 
 // printDeployFailures writes component and test failures to stderr.
