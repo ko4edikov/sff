@@ -176,11 +176,14 @@ func (c *Client) DeployAndWait(ctx context.Context, zipBytes []byte, opts Deploy
 		first = 1 * time.Second
 		cap_  = 5 * time.Second
 	)
+	// last carries at least the job id so a timed-out or cancelled wait can still
+	// tell the caller which deploy is running server-side.
+	last := &DeployResult{ID: id}
 	wait := first
 	for attempt := 1; ; attempt++ {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return last, ctx.Err()
 		case <-time.After(wait):
 		}
 		if wait < cap_ {
@@ -189,8 +192,9 @@ func (c *Client) DeployAndWait(ctx context.Context, zipBytes []byte, opts Deploy
 
 		done, res, err := c.CheckDeployStatus(ctx, id)
 		if err != nil {
-			return nil, err
+			return last, err
 		}
+		last = res
 		if progress != nil {
 			progress(attempt, res)
 		}

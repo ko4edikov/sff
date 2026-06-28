@@ -3,6 +3,7 @@ package mdapi
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"os"
@@ -36,6 +37,52 @@ func BuildZip(entries map[string][]byte) ([]byte, error) {
 		return nil, fmt.Errorf("finalize zip: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// LoadMetadataDir reads an already-in-metadata-format directory (the kind sff
+// retrieve --metadata-format writes) into zip entries plus the parsed manifest.
+// Every file is included verbatim under its forward-slash path relative to dir,
+// and a package.xml at the root is required — it is both kept as an entry and
+// returned as the Package for dry-run display and counting.
+func LoadMetadataDir(dir string) (map[string][]byte, *Package, error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !info.IsDir() {
+		return nil, nil, fmt.Errorf("%s is not a directory", dir)
+	}
+
+	entries := make(map[string][]byte)
+	err = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, rerr := filepath.Rel(dir, p)
+		if rerr != nil {
+			return rerr
+		}
+		data, derr := os.ReadFile(p)
+		if derr != nil {
+			return fmt.Errorf("read %s: %w", rel, derr)
+		}
+		entries[filepath.ToSlash(rel)] = data
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	manifest, ok := entries["package.xml"]
+	if !ok {
+		return nil, nil, fmt.Errorf("no package.xml at the root of %s (not a metadata-format directory)", dir)
+	}
+	var pkg Package
+	if err := xml.Unmarshal(manifest, &pkg); err != nil {
+		return nil, nil, fmt.Errorf("parse package.xml: %w", err)
+	}
+	pkg.Xmlns = metadataNS
+	return entries, &pkg, nil
 }
 
 // Unzip extracts a zip archive (the bytes returned by a retrieve) into destDir,

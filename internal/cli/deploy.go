@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -29,7 +30,8 @@ var testLevels = map[string]string{
 func newDeployCmd() *cobra.Command {
 	var sourceDir, manifest, projectDir, testLevel, apiVersion string
 	var metadata, tests []string
-	var checkOnly, dryRun, ignoreWarnings bool
+	var checkOnly, dryRun, ignoreWarnings, ignoreErrors, metadataFormat bool
+	var wait int
 	cmd := &cobra.Command{
 		Use:   "deploy",
 		Short: "Deploy source-format metadata to an org (Metadata API)",
@@ -37,31 +39,43 @@ func newDeployCmd() *cobra.Command {
 			"it via the Metadata API (the reverse of sff retrieve). Select what to deploy\n" +
 			"with -d (a whole source directory), -m Type:Name specifiers, or -x package.xml;\n" +
 			"-m/-x resolve members from the sfdx project. Decomposed types (objects, …) are\n" +
-			"re-composed and static resources are re-archived. Use --check-only to validate\n" +
-			"without saving, or --dry-run to build the package without deploying.",
+			"re-composed and static resources are re-archived. Pass --metadata-format to deploy\n" +
+			"a -d directory that is already in metadata format (with package.xml) as-is, the\n" +
+			"reverse of sff retrieve --metadata-format. Use --check-only to validate without\n" +
+			"saving, or --dry-run to build the package without deploying. --ignore-errors keeps\n" +
+			"successfully deployed components instead of rolling back on failure, and -w/--wait\n" +
+			"bounds how long to wait before returning while the deploy keeps running server-side.",
 		Example: `  sff deploy -d force-app/main/default
   sff deploy -m ApexClass:MyClass -m LWC:myCmp
   sff deploy -x manifest/package.xml --check-only
   sff deploy -d force-app -l RunSpecifiedTests --tests MyTest --tests OtherTest
-  sff deploy -m ApexClass --dry-run`,
+  sff deploy -d ./mdapi --metadata-format
+  sff deploy -m ApexClass --dry-run
+  sff deploy -d force-app --ignore-errors -w 10`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if sourceDir == "" && len(metadata) == 0 && manifest == "" {
 				return fmt.Errorf("specify what to deploy with -d, -m, or -x")
 			}
+			if metadataFormat && sourceDir == "" {
+				return fmt.Errorf("--metadata-format requires -d pointing at a metadata-format directory")
+			}
 			level, err := resolveTestLevel(testLevel, tests)
 			if err != nil {
 				return err
 			}
+			if wait < 0 {
+				return fmt.Errorf("--wait must be zero or positive (minutes)")
+			}
 			opts := mdapi.DeployOptions{
 				CheckOnly:       checkOnly,
-				RollbackOnError: true,
+				RollbackOnError: !ignoreErrors,
 				IgnoreWarnings:  ignoreWarnings,
 				TestLevel:       level,
 				RunTests:        tests,
 			}
 			sel := deploySelection{sourceDir: sourceDir, metadata: metadata, manifest: manifest, projectDir: projectDir}
-			return runDeploy(cmd.Context(), sel, apiVersion, dryRun, opts)
+			return runDeploy(cmd.Context(), sel, apiVersion, dryRun, metadataFormat, time.Duration(wait)*time.Minute, opts)
 		},
 	}
 	cmd.Flags().StringVarP(&sourceDir, "source-dir", "d", "", "source-format directory to deploy")
@@ -72,7 +86,10 @@ func newDeployCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&testLevel, "test-level", "l", "", "NoTestRun|RunSpecifiedTests|RunLocalTests|RunAllTestsInOrg")
 	cmd.Flags().StringArrayVar(&tests, "tests", nil, "Apex test class to run (repeatable; requires -l RunSpecifiedTests)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "build the package and print the manifest without deploying")
+	cmd.Flags().BoolVar(&metadataFormat, "metadata-format", false, "deploy the -d directory as-is (already metadata format with package.xml)")
 	cmd.Flags().BoolVar(&ignoreWarnings, "ignore-warnings", false, "succeed even if the deploy reports warnings")
+	cmd.Flags().BoolVar(&ignoreErrors, "ignore-errors", false, "don't roll back on failure; keep components that deployed successfully")
+	cmd.Flags().IntVarP(&wait, "wait", "w", 0, "minutes to wait for the deploy to finish (0 = wait indefinitely)")
 	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "Metadata API version")
 	cmd.MarkFlagsMutuallyExclusive("source-dir", "metadata", "manifest")
 	addTargetOrgFlag(cmd)
@@ -106,7 +123,7 @@ func resolveTestLevel(level string, tests []string) (string, error) {
 	return canon, nil
 }
 
-func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryRun bool, opts mdapi.DeployOptions) error {
+func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryRun, metadataFormat bool, wait time.Duration, opts mdapi.DeployOptions) error {
 	org, err := auth.Resolve(targetOrg)
 	if err != nil {
 		return err
@@ -114,31 +131,25 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 	client := mdapi.New(org)
 	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
 
-	// The describe catalog drives type/verbatim classification; a failure here is
-	// non-fatal — recompose falls back to its built-in heuristics.
-	catalog, _, _ := client.DescribeMetadataCached(ctx, false)
-
-	rec, err := recomposeSelection(sel, client.APIVersion, catalog)
+	entries, pkg, err := buildDeployPackage(ctx, client, sel, metadataFormat)
 	if err != nil {
 		return err
 	}
-	for _, w := range rec.Warnings {
-		fmt.Fprintln(os.Stderr, "warning:", w)
-	}
 
-	pkgXML, err := rec.Package.XML()
-	if err != nil {
-		return err
+	pkgXML, ok := entries["package.xml"]
+	if !ok {
+		if pkgXML, err = pkg.XML(); err != nil {
+			return err
+		}
+		entries["package.xml"] = pkgXML
 	}
 
 	if dryRun {
-		fmt.Printf("would deploy %d component(s) in %d file(s):\n\n", componentCount(rec.Package), len(rec.Entries))
+		fmt.Printf("would deploy %d component(s) in %d file(s):\n\n", componentCount(pkg), len(entries)-1)
 		fmt.Print(string(pkgXML))
 		return nil
 	}
 
-	entries := rec.Entries
-	entries["package.xml"] = pkgXML
 	zipBytes, err := mdapi.BuildZip(entries)
 	if err != nil {
 		return err
@@ -148,6 +159,11 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 	if opts.CheckOnly {
 		verb = "validating"
 	}
+	if wait > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, wait)
+		defer cancel()
+	}
 	start := time.Now()
 	res, err := client.DeployAndWait(ctx, zipBytes, opts, func(attempt int, r *mdapi.DeployResult) {
 		fmt.Fprintf(os.Stderr, "\r%s… %s (%d/%d components)",
@@ -155,6 +171,14 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 	})
 	fmt.Fprintln(os.Stderr)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			id := ""
+			if res != nil {
+				id = res.ID
+			}
+			fmt.Fprintf(os.Stderr, "timed out after %s; deploy %s is still running in %s\n", fmtDuration(wait), id, org.Username)
+			return &ExitError{Code: 1}
+		}
 		printDeployFailures(res)
 		return &ExitError{Code: 1}
 	}
@@ -168,6 +192,27 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 		fmt.Printf("ran %d test(s), %d failed\n", res.NumberTestsCompleted, res.NumberTestErrors)
 	}
 	return nil
+}
+
+// buildDeployPackage produces the zip entries and manifest to deploy. With
+// metadataFormat the -d directory is read verbatim (its package.xml kept as-is);
+// otherwise the selection is recomposed from source format, with the describe
+// catalog driving type/verbatim classification (a catalog failure is non-fatal —
+// recompose falls back to its built-in heuristics).
+func buildDeployPackage(ctx context.Context, client *mdapi.Client, sel deploySelection, metadataFormat bool) (map[string][]byte, *mdapi.Package, error) {
+	if metadataFormat {
+		return mdapi.LoadMetadataDir(sel.sourceDir)
+	}
+
+	catalog, _, _ := client.DescribeMetadataCached(ctx, false)
+	rec, err := recomposeSelection(sel, client.APIVersion, catalog)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, w := range rec.Warnings {
+		fmt.Fprintln(os.Stderr, "warning:", w)
+	}
+	return rec.Entries, rec.Package, nil
 }
 
 // recomposeSelection turns the chosen selection into metadata-format entries and

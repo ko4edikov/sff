@@ -176,6 +176,7 @@ sff deploy -m ApexClass:MyClass -m LWC:myCmp               # specific components
 sff deploy -m ApexClass                                    # bare type = all members (*)
 sff deploy -x manifest/package.xml --check-only            # from a manifest, validate only
 sff deploy -d force-app -l RunSpecifiedTests --tests MyTest # run specific Apex tests
+sff deploy -d ./mdapi --metadata-format                    # deploy a metadata-format dir as-is
 sff deploy -m ApexClass:MyClass --dry-run                  # build & print the manifest, don't deploy
 ```
 
@@ -192,6 +193,10 @@ Notes:
   `describeMetadata` catalog, with built-in fallbacks when it's unavailable.
 - LWC/Aura bundles deploy verbatim; sf's default-ignored files (`__tests__/`,
   `*.test.js`, `jsconfig.json`, `.eslintrc.json`) are excluded.
+- **`--metadata-format`** skips recomposition and deploys the `-d` directory
+  as-is — it must already be in metadata format with a `package.xml` at its root
+  (the reverse of `sff retrieve --metadata-format`). The existing manifest is
+  used verbatim rather than rebuilt.
 - `--check-only` validates without saving; `--test-level` (`NoTestRun`,
   `RunSpecifiedTests` with `--tests`, `RunLocalTests`, `RunAllTestsInOrg`)
   controls Apex tests; `--dry-run` builds the package and prints the manifest
@@ -253,7 +258,7 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
 - [x] source-format decomposition for `CustomObject`/`CustomObjectTranslation`/`Bot` (byte-identical to sf)
 - [x] source-format conversion for `StaticResource` (content-type rename + archive expansion)
 - [x] `sff diff` — compare local Apex/LWC/Aura against the org (Tooling API)
-- [x] `sff deploy` — Metadata API deploy from source format: `-d` dir / `-m`/`-x` members (recompose + `package.xml`), `--check-only`/`--test-level`/`--dry-run`
+- [x] `sff deploy` — Metadata API deploy from source format: `-d` dir / `-m`/`-x` members (recompose + `package.xml`), `--check-only`/`--test-level`/`--dry-run`/`--metadata-format`
 - [ ] `sff apex run`, `sff data get/create/update/delete`
 
 ## Build
