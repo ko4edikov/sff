@@ -281,6 +281,10 @@ func modTime(path string) string {
 	return fi.ModTime().Format("2006-01-02 15:04:05")
 }
 
+// colorSupported is set once at startup: it enables ANSI processing on the
+// Windows console (no-op elsewhere) and records whether colors can render.
+var colorSupported = enableVirtualTerminal()
+
 // ANSI colors for the built-in unified diff.
 const (
 	ansiReset = "\x1b[0m"
@@ -295,7 +299,7 @@ const (
 // left plain when piped/redirected or when NO_COLOR is set, keeping it clean for
 // scripts.
 func writeColorDiff(w io.Writer, data []byte) {
-	color := isTerminal(w) && os.Getenv("NO_COLOR") == ""
+	color := colorSupported && isTerminal(w) && os.Getenv("NO_COLOR") == ""
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // tolerate long lines
 	for sc.Scan() {

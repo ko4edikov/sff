@@ -179,8 +179,10 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
   script.
 - Output is colorized like git (added green, removed red, hunks cyan) when
   stdout is a terminal; it stays plain when piped/redirected or when `NO_COLOR`
-  is set. When a target matches the org, sff prints `✓ <name>: no differences`
-  (to stderr) and exits 0 — exit 1 means at least one target differs.
+  is set. On Windows, ANSI processing is enabled on the console automatically
+  (no-op on Windows Terminal, which already supports it). When a target matches
+  the org, sff prints `✓ <name>: no differences` (to stderr) and exits 0 — exit
+  1 means at least one target differs.
 
 ## Roadmap
 
