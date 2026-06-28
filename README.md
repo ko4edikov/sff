@@ -161,6 +161,36 @@ Flags may go before or after the SOQL. The client follows `nextRecordsUrl`
 pagination and refreshes the access token once on a 401. End-to-end this runs
 in ~0.3 s vs ~4.5 s for `sf data query`.
 
+## Deploying metadata (`sff deploy`)
+
+The reverse of `sff retrieve`: recomposes a source-format directory into a
+metadata-format package and deploys it via the Metadata API (SOAP `deploy` +
+`checkDeployStatus`). Decomposed types are folded back into one file, static
+resources are re-archived, and the `package.xml` manifest is built from the
+files found.
+
+```sh
+sff deploy -d force-app/main/default                       # deploy a source dir
+sff deploy -d force-app --check-only                        # validate only (no save)
+sff deploy -d force-app -l RunSpecifiedTests --tests MyTest # run specific Apex tests
+sff deploy -d force-app --dry-run                           # build & print the manifest, don't deploy
+```
+
+Notes:
+- **Recomposition** is the inverse of retrieve's conversion: `CustomObject`/
+  `CustomObjectTranslation`/`Bot` children are folded back into the composed
+  file, and `StaticResource` directories are re-zipped (single-file resources
+  become the `.resource` binary). Classification is driven by the org's
+  `describeMetadata` catalog, with built-in fallbacks when it's unavailable.
+- LWC/Aura bundles deploy verbatim; sf's default-ignored files (`__tests__/`,
+  `*.test.js`, `jsconfig.json`, `.eslintrc.json`) are excluded.
+- `--check-only` validates without saving; `--test-level` (`NoTestRun`,
+  `RunSpecifiedTests` with `--tests`, `RunLocalTests`, `RunAllTestsInOrg`)
+  controls Apex tests; `--dry-run` builds the package and prints the manifest
+  without contacting the org's deploy endpoint.
+- Component and test failures are printed per line; the process exits non-zero
+  when the deploy doesn't succeed.
+
 ## Comparing with the org (`sff diff`)
 
 Fetches a component's source from the org via the Tooling API and compares it
@@ -215,7 +245,7 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
 - [x] source-format decomposition for `CustomObject`/`CustomObjectTranslation`/`Bot` (byte-identical to sf)
 - [x] source-format conversion for `StaticResource` (content-type rename + archive expansion)
 - [x] `sff diff` — compare local Apex/LWC/Aura against the org (Tooling API)
-- [ ] `sff deploy` — Metadata API deploy (zip a dir / source passthrough)
+- [x] `sff deploy` — Metadata API deploy of a source-format dir (recompose + `package.xml`), `--check-only`/`--test-level`/`--dry-run`
 - [ ] `sff apex run`, `sff data get/create/update/delete`
 
 ## Build

@@ -7,8 +7,36 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
+
+// BuildZip packs metadata-format entries (forward-slash paths to their bytes,
+// including package.xml) into an in-memory zip suitable for a singlePackage
+// deploy. Entries are written in sorted order so the archive is deterministic.
+func BuildZip(entries map[string][]byte) ([]byte, error) {
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, name := range names {
+		w, err := zw.Create(name)
+		if err != nil {
+			return nil, fmt.Errorf("zip entry %s: %w", name, err)
+		}
+		if _, err := w.Write(entries[name]); err != nil {
+			return nil, fmt.Errorf("write zip entry %s: %w", name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		return nil, fmt.Errorf("finalize zip: %w", err)
+	}
+	return buf.Bytes(), nil
+}
 
 // Unzip extracts a zip archive (the bytes returned by a retrieve) into destDir,
 // returning the relative paths written. It rejects entries that would escape
