@@ -41,11 +41,16 @@ reads the files directly (never shells out to `sf`, which is slow and redacts
 secrets in newer versions):
 
 ```sh
+sff org list                 # all authenticated orgs (▸ marks the default)
+sff org list --json
 sff org display              # default org (~/.sf/config.json target-org)
 sff org display pr-dev       # by alias (~/.sfdx/alias.json)
 sff org display user@x.com   # by username
 sff org display pr-dev --refresh   # refresh the access token first
 ```
+
+`sff org list` reads the auth files directly (no token decryption, no network),
+so it's instant; it skips sf's `*.sandbox.json` tracking stubs.
 
 Decryption details (verified against `@salesforce/cli` on macOS):
 

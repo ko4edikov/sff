@@ -2,7 +2,11 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -15,7 +19,69 @@ func newOrgCmd() *cobra.Command {
 		Short: "Inspect stored orgs",
 	}
 	cmd.AddCommand(newOrgDisplayCmd())
+	cmd.AddCommand(newOrgListCmd())
 	return cmd
+}
+
+func newOrgListCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List authenticated orgs (reads sf's ~/.sfdx)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			orgs, err := auth.ListOrgs()
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(orgs)
+			}
+			return printOrgs(orgs)
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "output JSON")
+	return cmd
+}
+
+func printOrgs(orgs []*auth.OrgSummary) error {
+	if len(orgs) == 0 {
+		fmt.Println("No authenticated orgs found in ~/.sfdx.")
+		return nil
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "\tALIAS\tUSERNAME\tORG ID\tTYPE")
+	fmt.Fprintln(tw, "\t─────\t────────\t──────\t────")
+	for _, o := range orgs {
+		marker := ""
+		if o.IsDefault {
+			marker = "▸"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+			marker, strings.Join(o.Aliases, ","), o.Username, o.OrgID, orgType(o))
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	fmt.Printf("\n%d org(s); ▸ = default\n", len(orgs))
+	return nil
+}
+
+// orgType renders a human label for the org's nature.
+func orgType(o *auth.OrgSummary) string {
+	t := "production"
+	switch {
+	case o.IsScratch:
+		t = "scratch"
+	case o.IsSandbox:
+		t = "sandbox"
+	}
+	if o.IsDevHub {
+		t += " (devhub)"
+	}
+	return t
 }
 
 func newOrgDisplayCmd() *cobra.Command {
