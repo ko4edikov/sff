@@ -4,13 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/pmezard/go-difflib/difflib"
 	"github.com/spf13/cobra"
 
 	"github.com/ko4edikov/sff/internal/auth"
@@ -109,7 +113,7 @@ func diffTarget(ctx context.Context, client *sfapi.Client, t *source.Target, vie
 	if viewer != "" {
 		return false, runViewer(ctx, viewer, remotePath, t.LocalPath)
 	}
-	differed, err := runUnifiedDiff(ctx, remotePath, t.LocalPath, t.Kind != source.Flat)
+	differed, err := runUnifiedDiff(remotePath, t.LocalPath, t.Kind != source.Flat)
 	if err == nil && !differed {
 		fmt.Fprintf(os.Stderr, "✓ %s: no differences\n", t.Name)
 	}
@@ -174,26 +178,107 @@ func runViewer(ctx context.Context, tmpl, remote, local string) error {
 	return nil
 }
 
-// runUnifiedDiff shells out to `diff -u` (or `-ru` for bundles) and reports
-// whether the contents differ. diff exit codes: 0 identical, 1 differences,
-// >1 a real error.
-func runUnifiedDiff(ctx context.Context, remote, local string, recursive bool) (bool, error) {
-	flags := "-u"
+// runUnifiedDiff produces a unified diff in-process (no external `diff`
+// binary, so it behaves identically on every OS), prints it colorized, and
+// reports whether the contents differ. recursive diffs a bundle directory pair;
+// otherwise it diffs two files.
+func runUnifiedDiff(remote, local string, recursive bool) (bool, error) {
 	if recursive {
-		flags = "-ru"
+		return diffTrees(remote, local)
 	}
-	cmd := exec.CommandContext(ctx, "diff", flags, remote, local)
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, os.Stderr
-	err := cmd.Run()
-	if err == nil {
-		return false, nil // identical
+	return diffFiles(remote, local)
+}
+
+// diffFiles writes a unified diff of two files (a missing side is treated as
+// empty) and reports whether they differ.
+func diffFiles(remote, local string) (bool, error) {
+	rb, err := readOrEmpty(remote)
+	if err != nil {
+		return false, err
 	}
-	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
-		writeColorDiff(os.Stdout, out.Bytes())
-		return true, nil // differences
+	lb, err := readOrEmpty(local)
+	if err != nil {
+		return false, err
 	}
-	return false, fmt.Errorf("diff failed: %w", err)
+	text, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+		A:        toLines(rb),
+		B:        toLines(lb),
+		FromFile: remote,
+		FromDate: modTime(remote),
+		ToFile:   local,
+		ToDate:   modTime(local),
+		Context:  3,
+	})
+	if err != nil {
+		return false, fmt.Errorf("diff %s: %w", local, err)
+	}
+	if text == "" {
+		return false, nil
+	}
+	writeColorDiff(os.Stdout, []byte(text))
+	return true, nil
+}
+
+// diffTrees diffs every file under two bundle directories (paired by relative
+// path; a file present on only one side diffs against an empty counterpart) and
+// reports whether anything differs.
+func diffTrees(remote, local string) (bool, error) {
+	rels := map[string]bool{}
+	for _, root := range []string{remote, local} {
+		_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			rel, rerr := filepath.Rel(root, p)
+			if rerr == nil {
+				rels[filepath.ToSlash(rel)] = true
+			}
+			return nil
+		})
+	}
+	ordered := make([]string, 0, len(rels))
+	for rel := range rels {
+		ordered = append(ordered, rel)
+	}
+	sort.Strings(ordered)
+
+	differed := false
+	for _, rel := range ordered {
+		fp := filepath.FromSlash(rel)
+		d, err := diffFiles(filepath.Join(remote, fp), filepath.Join(local, fp))
+		if err != nil {
+			return differed, err
+		}
+		differed = differed || d
+	}
+	return differed, nil
+}
+
+// readOrEmpty reads a file, returning nil bytes (not an error) when it is absent.
+func readOrEmpty(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return b, err
+}
+
+// toLines splits content into newline-terminated lines for difflib, mapping
+// empty content to no lines (so it diffs cleanly against a present file).
+func toLines(b []byte) []string {
+	if len(b) == 0 {
+		return nil
+	}
+	return difflib.SplitLines(string(b))
+}
+
+// modTime returns a file's modification time as a diff header date, or "".
+func modTime(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return fi.ModTime().Format("2006-01-02 15:04:05")
 }
 
 // ANSI colors for the built-in unified diff.

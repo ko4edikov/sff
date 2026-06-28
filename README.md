@@ -172,8 +172,11 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
 - `{remote}` is a temp file (flat) or directory (bundle); `{local}` is the
   working copy. Org content is normalized (CRLF→LF, trailing whitespace, final
   newline matched to local) so only real differences show.
-- The built-in fallback shells out to `diff -u`/`diff -ru`; viewer mode and the
-  org fetch need no external tools. This replaces the old `sf-compare` script.
+- The built-in fallback computes the unified diff in-process (via go-difflib),
+  so it needs no external `diff` binary and behaves identically on Windows,
+  macOS, and Linux. Bundles are diffed file-by-file (a file present on only one
+  side diffs against an empty counterpart). This replaces the old `sf-compare`
+  script.
 - Output is colorized like git (added green, removed red, hunks cyan) when
   stdout is a terminal; it stays plain when piped/redirected or when `NO_COLOR`
   is set. When a target matches the org, sff prints `✓ <name>: no differences`
