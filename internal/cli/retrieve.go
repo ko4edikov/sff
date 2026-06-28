@@ -101,7 +101,11 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, pr
 		return nil
 	}
 
-	conv, err := source.ConvertZipToSource(res.ZipFile, proj)
+	// The describe catalog drives content/XML-only classification; a failure
+	// here is non-fatal — the converter falls back to its built-in heuristics.
+	catalog, _, _ := client.DescribeMetadataCached(ctx, false)
+
+	conv, err := source.ConvertZipToSource(res.ZipFile, proj, catalog)
 	if err != nil {
 		return err
 	}

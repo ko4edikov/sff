@@ -1,0 +1,41 @@
+{
+  "_comment": "Source-format decomposition rules, extracted from @salesforce/source-deploy-retrieve metadataRegistry.json (BSD-3). These conventions are not reported by the Metadata API describeMetadata, so they are vendored here. layout: folderPerType writes children under <dir>/<name>/<childTag>/; topLevel writes them under <dir>/<name>/. xmlTag is the child element name inside the composed file; type is the root element of the split child file.",
+  "types": [
+    {
+      "name": "CustomObject",
+      "directoryName": "objects",
+      "suffix": "object",
+      "layout": "folderPerType",
+      "children": [
+        { "xmlTag": "fields", "type": "CustomField", "suffix": "field" },
+        { "xmlTag": "indexes", "type": "Index", "suffix": "index" },
+        { "xmlTag": "businessProcesses", "type": "BusinessProcess", "suffix": "businessProcess" },
+        { "xmlTag": "recordTypes", "type": "RecordType", "suffix": "recordType" },
+        { "xmlTag": "compactLayouts", "type": "CompactLayout", "suffix": "compactLayout" },
+        { "xmlTag": "webLinks", "type": "WebLink", "suffix": "webLink" },
+        { "xmlTag": "validationRules", "type": "ValidationRule", "suffix": "validationRule" },
+        { "xmlTag": "sharingReasons", "type": "SharingReason", "suffix": "sharingReason" },
+        { "xmlTag": "listViews", "type": "ListView", "suffix": "listView" },
+        { "xmlTag": "fieldSets", "type": "FieldSet", "suffix": "fieldSet" }
+      ]
+    },
+    {
+      "name": "CustomObjectTranslation",
+      "directoryName": "objectTranslations",
+      "suffix": "objectTranslation",
+      "layout": "topLevel",
+      "children": [
+        { "xmlTag": "fields", "type": "CustomFieldTranslation", "suffix": "fieldTranslation" }
+      ]
+    },
+    {
+      "name": "Bot",
+      "directoryName": "bots",
+      "suffix": "bot",
+      "layout": "topLevel",
+      "children": [
+        { "xmlTag": "botVersions", "type": "BotVersion", "suffix": "botVersion" }
+      ]
+    }
+  ]
+}

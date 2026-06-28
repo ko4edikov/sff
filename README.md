@@ -114,10 +114,17 @@ Notes:
 - **Source format** (default): the project is found by searching up from the
   current directory (override with `--project-dir`). Existing files are
   overwritten in place; new ones land under the default package directory's
-  `main/default` tree. Content types (Apex, LWC, Aura) copy verbatim; XML-only
-  types (PermissionSet, Tab, CustomMetadata, …) get the `-meta.xml` suffix.
-  Decomposed types (CustomObject, StaticResource, Workflow, …) are not converted
-  yet — they're skipped with a warning; use `--metadata-format` for those.
+  `main/default` tree. Classification is driven by the org's `describeMetadata`
+  catalog (`metaFile`/`suffix`): content types (Apex, LWC, Aura) copy verbatim;
+  XML-only types (PermissionSet, Tab, CustomMetadata, …) get the `-meta.xml`
+  suffix and are re-serialized to match sf (LF endings, empty tags expanded).
+- **Decomposition**: `CustomObject` (and `CustomObjectTranslation`, `Bot`) are
+  split into source files (`objects/Account/fields/X__c.field-meta.xml`, etc.) —
+  byte-for-byte identical to `sf project convert mdapi`. The rules live in a
+  vendored `decomposition.json` (embedded via `go:embed`), since these
+  source-format conventions aren't reported by `describeMetadata`.
+- **Not yet converted**: `StaticResource` (content-type-driven extension remap)
+  is skipped with a warning; use `--metadata-format` for it.
 - Friendly aliases: `apex`→`ApexClass`, `lwc`→`LightningComponentBundle`,
   `aura`→`AuraDefinitionBundle`. Other types pass through verbatim.
 - Components from **managed packages** must be requested with their namespace
@@ -170,9 +177,11 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
 - [x] `internal/sfapi` — REST client with auto-refresh on 401
 - [x] `sff query "SELECT ..."` — SOQL with pagination, table / `--json` / `--csv` output (~0.3s)
 - [x] `sff retrieve` — Metadata API (SOAP), `-m`/`-x`, source-format by default (`--metadata-format` for raw)
+- [x] `sff org list metadata-types` — describeMetadata catalog (cached in `~/.sff`)
+- [x] source-format decomposition for `CustomObject`/`CustomObjectTranslation`/`Bot` (byte-identical to sf)
 - [x] `sff diff` — compare local Apex/LWC/Aura against the org (Tooling API)
 - [ ] `sff deploy` — Metadata API deploy (zip a dir / source passthrough)
-- [ ] source-format conversion for decomposed types (CustomObject, StaticResource, …)
+- [ ] source-format conversion for `StaticResource` (extension remap)
 - [ ] `sff apex run`, `sff data get/create/update/delete`
 
 ## Build
