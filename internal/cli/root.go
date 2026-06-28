@@ -25,6 +25,7 @@ func newRootCmd(version string) *cobra.Command {
 
 	root.AddCommand(newQueryCmd())
 	root.AddCommand(newOrgCmd())
+	root.AddCommand(newRetrieveCmd())
 	return root
 }
 

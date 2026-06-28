@@ -76,6 +76,28 @@ Output formats: table (default), `--json`, `--csv` (mutually exclusive).
 `-f/--out-file` writes the data to a file; the timing summary then goes to
 stderr, so piped or saved output stays clean.
 
+## Retrieving metadata (`sff retrieve`)
+
+Retrieves **metadata-format** files via the Metadata API (SOAP), selected by
+`-m Type:Name` specifiers (sff builds the `package.xml`) or an existing
+manifest. No source-format decomposition yet — files land as the API returns
+them (which already matches source layout for Apex, LWC, Aura, etc.).
+
+```sh
+sff retrieve -m ApexClass:MyClass -d ./out          # one component
+sff retrieve -m ApexClass -m LWC:myCmp -o pr-dev     # multiple; bare type = wildcard *
+sff retrieve -x manifest/package.xml -d ./out        # from an existing manifest
+```
+
+Notes:
+- A bare `-m ApexClass` retrieves all members (`*`). `Type:Name` retrieves one.
+- Friendly aliases: `apex`→`ApexClass`, `lwc`→`LightningComponentBundle`,
+  `aura`→`AuraDefinitionBundle`. Other types pass through verbatim.
+- Components from **managed packages** must be requested with their namespace
+  (e.g. `clm__Foo`); a bare name returns only `package.xml`.
+- Transport is hand-rolled SOAP (`encoding/xml`, no dependency); the session is
+  refreshed once on an `INVALID_SESSION_ID` fault.
+
 Flags may go before or after the SOQL. The client follows `nextRecordsUrl`
 pagination and refreshes the access token once on a 401. End-to-end this runs
 in ~0.3 s vs ~4.5 s for `sf data query`.
@@ -84,9 +106,11 @@ in ~0.3 s vs ~4.5 s for `sf data query`.
 
 - [x] `internal/auth` — read `sf` auth files, Keychain decrypt, token refresh
 - [x] `internal/sfapi` — REST client with auto-refresh on 401
-- [x] `sff query "SELECT ..."` — SOQL with pagination, table / `--json` output (~0.3s)
+- [x] `sff query "SELECT ..."` — SOQL with pagination, table / `--json` / `--csv` output (~0.3s)
+- [x] `sff retrieve` — Metadata API (SOAP), `-m`/`-x`, metadata-format output
+- [ ] `sff deploy` — Metadata API deploy (zip a dir / source passthrough)
+- [ ] source↔metadata conversion (CustomObject decomposition)
 - [ ] `sff apex run`, `sff data get/create/update/delete`
-- [ ] `sff deploy` / `sff retrieve` — hardest part (source↔metadata conversion)
 
 ## Build
 
