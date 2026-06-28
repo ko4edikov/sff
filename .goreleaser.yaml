@@ -1,0 +1,47 @@
+# GoReleaser builds cross-platform binaries on a `v*` tag and publishes them to
+# a GitHub Release. See https://goreleaser.com.
+version: 2
+
+project_name: sff
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: .
+    binary: sff
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  draft: false
+  prerelease: auto

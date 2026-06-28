@@ -19,6 +19,27 @@ Measured on this machine (`@salesforce/cli/2.139.6`, node v22, 35 plugins, 210 M
 work.** A Go equivalent should land around the curl time → **~15–20x faster**
 on read commands.
 
+## Install
+
+**With Go** (any platform):
+
+```sh
+go install github.com/ko4edikov/sff@latest   # → ~/go/bin/sff
+```
+
+**Without Go** — install script (Linux/macOS), grabs the prebuilt binary:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ko4edikov/sff/master/install.sh | sh
+```
+
+**Manual** — download the archive for your OS/arch from the
+[Releases](https://github.com/ko4edikov/sff/releases) page (Windows ships a
+`.zip`), unpack, and put `sff` on your `PATH`.
+
+sff reads the credentials already stored by the official `sf` CLI, so once it's
+on your `PATH` it works against every org you've authenticated with `sf`.
+
 ## Auth model (how sff reads credentials)
 
 sff does **not** shell out to `sf` for tokens (too slow; secrets are also
