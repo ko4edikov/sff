@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -85,6 +87,75 @@ func TestComponentCount(t *testing.T) {
 	}
 }
 
+func TestResolveToolingComponents(t *testing.T) {
+	t.Run("source dir routes apex + static, skips the rest", func(t *testing.T) {
+		dir := t.TempDir()
+		write := func(rel, body string) {
+			full := filepath.Join(dir, filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write("classes/Foo.cls", "public class Foo {}")
+		write("staticresources/Baz.txt", "hello")
+		write("staticresources/Baz.resource-meta.xml",
+			`<?xml version="1.0"?><StaticResource><contentType>text/plain</contentType><cacheControl>Public</cacheControl></StaticResource>`)
+		write("lwc/myCmp/myCmp.js", "export default {}")
+
+		in, skipped, err := resolveToolingComponents(deploySelection{sourceDir: dir}, "60.0")
+		if err != nil {
+			t.Fatalf("resolveToolingComponents: %v", err)
+		}
+		if len(in.Apex) != 1 || in.Apex[0].Type != "ApexClass" || in.Apex[0].Name != "Foo" {
+			t.Fatalf("Apex = %+v", in.Apex)
+		}
+		if in.Apex[0].Body != "public class Foo {}" {
+			t.Errorf("body = %q", in.Apex[0].Body)
+		}
+		if len(in.Static) != 1 || in.Static[0].Name != "Baz" {
+			t.Fatalf("Static = %+v", in.Static)
+		}
+		if in.Static[0].ContentType != "text/plain" || in.Static[0].CacheControl != "Public" {
+			t.Errorf("static meta = %+v", in.Static[0])
+		}
+		if string(in.Static[0].Body) != "hello" {
+			t.Errorf("static body = %q", in.Static[0].Body)
+		}
+		if len(skipped) != 1 || skipped[0] != "lwc/myCmp" {
+			t.Errorf("skipped = %v", skipped)
+		}
+	})
+
+	t.Run("unsupported type errors", func(t *testing.T) {
+		_, _, err := resolveToolingComponents(deploySelection{metadata: []string{"CustomObject:Account"}}, "60.0")
+		if err == nil || !strings.Contains(err.Error(), "does not support CustomObject") {
+			t.Fatalf("want unsupported-type error, got %v", err)
+		}
+	})
+
+	t.Run("wildcard errors", func(t *testing.T) {
+		_, _, err := resolveToolingComponents(deploySelection{metadata: []string{"ApexClass"}}, "60.0")
+		if err == nil || !strings.Contains(err.Error(), "wildcard is not supported") {
+			t.Fatalf("want wildcard error, got %v", err)
+		}
+	})
+}
+
+func TestIncompatibleWithTooling(t *testing.T) {
+	if got := incompatibleWithTooling(false, false, false, "", nil); got != "" {
+		t.Errorf("clean combo flagged: %q", got)
+	}
+	if got := incompatibleWithTooling(false, false, false, "", []string{"MyTest"}); !strings.Contains(got, "--test-level") {
+		t.Errorf("tests not flagged: %q", got)
+	}
+	if got := incompatibleWithTooling(true, false, false, "", nil); got != "--metadata-format" {
+		t.Errorf("metadata-format = %q", got)
+	}
+}
+
 // execDeploy runs the deploy command with args, returning the RunE error while
 // suppressing usage/error output. It only exercises validation that returns
 // before any org is contacted.
@@ -111,6 +182,9 @@ func TestNewDeployCmd_Validation(t *testing.T) {
 		{name: "bad test level", args: []string{"-m", "ApexClass:Foo", "-l", "bogus"}, wantErr: "invalid --test-level"},
 		{name: "tests need specified level", args: []string{"-m", "ApexClass:Foo", "--tests", "MyTest"}, wantErr: "--tests requires --test-level RunSpecifiedTests"},
 		{name: "negative wait", args: []string{"-m", "ApexClass:Foo", "-w", "-1"}, wantErr: "--wait must be zero or positive"},
+		{name: "tooling with metadata-format", args: []string{"-d", "force-app", "--tooling", "--metadata-format"}, wantErr: "--tooling cannot be combined with --metadata-format"},
+		{name: "tooling with ignore-errors", args: []string{"-m", "ApexClass:Foo", "--tooling", "--ignore-errors"}, wantErr: "--tooling cannot be combined with --ignore-errors"},
+		{name: "tooling with test-level", args: []string{"-m", "ApexClass:Foo", "--tooling", "-l", "RunLocalTests"}, wantErr: "--tooling cannot be combined with --test-level"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
