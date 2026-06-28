@@ -87,19 +87,28 @@ in scripts that parse `.result.records`.
 
 ## Retrieving metadata (`sff retrieve`)
 
-Retrieves **metadata-format** files via the Metadata API (SOAP), selected by
-`-m Type:Name` specifiers (sff builds the `package.xml`) or an existing
-manifest. No source-format decomposition yet — files land as the API returns
-them (which already matches source layout for Apex, LWC, Aura, etc.).
+Retrieves metadata via the Metadata API (SOAP), selected by `-m Type:Name`
+specifiers (sff builds the `package.xml`) or an existing manifest. By default
+the result is **converted to source format** and merged into the sfdx project,
+like `sf project retrieve start`; `--metadata-format` keeps the raw
+metadata-format files instead.
 
 ```sh
-sff retrieve -m ApexClass:MyClass -d ./out          # one component
-sff retrieve -m ApexClass -m LWC:myCmp -o pr-dev     # multiple; bare type = wildcard *
-sff retrieve -x manifest/package.xml -d ./out        # from an existing manifest
+sff retrieve -m ApexClass:MyClass                    # → source format into the project
+sff retrieve -m ApexClass -m LWC:myCmp -o pr-dev      # multiple; bare type = wildcard *
+sff retrieve -x manifest/package.xml                  # from an existing manifest
+sff retrieve -m ApexClass:MyClass --metadata-format -d ./mdapi   # raw metadata-format unzip
 ```
 
 Notes:
 - A bare `-m ApexClass` retrieves all members (`*`). `Type:Name` retrieves one.
+- **Source format** (default): the project is found by searching up from the
+  current directory (override with `--project-dir`). Existing files are
+  overwritten in place; new ones land under the default package directory's
+  `main/default` tree. Content types (Apex, LWC, Aura) copy verbatim; XML-only
+  types (PermissionSet, Tab, CustomMetadata, …) get the `-meta.xml` suffix.
+  Decomposed types (CustomObject, StaticResource, Workflow, …) are not converted
+  yet — they're skipped with a warning; use `--metadata-format` for those.
 - Friendly aliases: `apex`→`ApexClass`, `lwc`→`LightningComponentBundle`,
   `aura`→`AuraDefinitionBundle`. Other types pass through verbatim.
 - Components from **managed packages** must be requested with their namespace
@@ -151,10 +160,10 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
 - [x] `internal/auth` — read `sf` auth files, Keychain decrypt, token refresh
 - [x] `internal/sfapi` — REST client with auto-refresh on 401
 - [x] `sff query "SELECT ..."` — SOQL with pagination, table / `--json` / `--csv` output (~0.3s)
-- [x] `sff retrieve` — Metadata API (SOAP), `-m`/`-x`, metadata-format output
+- [x] `sff retrieve` — Metadata API (SOAP), `-m`/`-x`, source-format by default (`--metadata-format` for raw)
 - [x] `sff diff` — compare local Apex/LWC/Aura against the org (Tooling API)
 - [ ] `sff deploy` — Metadata API deploy (zip a dir / source passthrough)
-- [ ] source↔metadata conversion (CustomObject decomposition)
+- [ ] source-format conversion for decomposed types (CustomObject, StaticResource, …)
 - [ ] `sff apex run`, `sff data get/create/update/delete`
 
 ## Build
