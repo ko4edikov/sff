@@ -85,5 +85,6 @@ in ~0.3 s vs ~4.5 s for `sf data query`.
 
 ```sh
 go build -o sff .
-./sff version
+./sff --version
+./sff --help     # command tree (built on cobra)
 ```
