@@ -301,6 +301,7 @@ go get github.com/ko4edikov/sff/pkg/sfapi
 | `pkg/mdapi` | Metadata API SOAP client: `Deploy`/`DeployAndWait`, `Retrieve`/`RetrieveAndWait`, `DescribeMetadata`, and zip/manifest helpers. |
 | `pkg/source` | Source-format ↔ metadata-format conversion (decompose/recompose, static resources). |
 | `pkg/project` | Locate and read the surrounding sfdx project. |
+| `pkg/progress` | Optional spinner + elapsed-timer UI (`progress.Start`/`StartOn`) to render the API clients' progress callbacks; an inert no-op off a TTY. |
 
 A minimal query, reusing the same credentials as the CLI:
 

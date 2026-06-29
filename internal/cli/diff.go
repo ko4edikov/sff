@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ko4edikov/sff/pkg/auth"
+	"github.com/ko4edikov/sff/pkg/progress"
 	"github.com/ko4edikov/sff/pkg/sfapi"
 	"github.com/ko4edikov/sff/pkg/source"
 )
@@ -99,7 +100,7 @@ func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string) er
 // differs (only meaningful for the built-in unified-diff fallback; viewer mode
 // reports false).
 func diffTarget(ctx context.Context, client *sfapi.Client, t *source.Target, viewer string) (bool, error) {
-	prog := startProgress(fmt.Sprintf("querying %s from org", t.Name))
+	prog := progress.Start(fmt.Sprintf("querying %s from org", t.Name))
 	files, err := source.Fetch(ctx, client, t)
 	prog.Stop()
 	if err != nil {

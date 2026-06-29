@@ -11,6 +11,7 @@ import (
 
 	"github.com/ko4edikov/sff/pkg/auth"
 	"github.com/ko4edikov/sff/pkg/mdapi"
+	"github.com/ko4edikov/sff/pkg/progress"
 	"github.com/ko4edikov/sff/pkg/project"
 	"github.com/ko4edikov/sff/pkg/sfapi"
 	"github.com/ko4edikov/sff/pkg/source"
@@ -84,7 +85,7 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, pr
 	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
 
 	start := time.Now()
-	prog := startProgress("retrieving")
+	prog := progress.Start("retrieving")
 	res, err := client.RetrieveAndWait(ctx, pkg, func(attempt int) {
 		prog.Update(fmt.Sprintf("retrieving (poll %d)", attempt))
 	})

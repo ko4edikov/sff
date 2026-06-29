@@ -14,6 +14,7 @@ import (
 
 	"github.com/ko4edikov/sff/pkg/auth"
 	"github.com/ko4edikov/sff/pkg/mdapi"
+	"github.com/ko4edikov/sff/pkg/progress"
 	"github.com/ko4edikov/sff/pkg/project"
 	"github.com/ko4edikov/sff/pkg/sfapi"
 	"github.com/ko4edikov/sff/pkg/source"
@@ -179,7 +180,7 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 		defer cancel()
 	}
 	start := time.Now()
-	prog := startProgress(verb)
+	prog := progress.Start(verb)
 	res, err := client.DeployAndWait(ctx, zipBytes, opts, func(attempt int, r *mdapi.DeployResult) {
 		prog.Update(fmt.Sprintf("%s — %s (%d/%d components)",
 			verb, r.Status, r.NumberComponentsDeployed, r.NumberComponentsTotal))
@@ -365,7 +366,7 @@ func runToolingDeploy(ctx context.Context, sel deploySelection, apiVersion strin
 		verb = "validating"
 	}
 	start := time.Now()
-	prog := startProgress(verb)
+	prog := progress.Start(verb)
 	res, err := client.ToolingDeploy(ctx, in, checkOnly, func(state string) {
 		prog.Update(fmt.Sprintf("%s — %s", verb, state))
 	})

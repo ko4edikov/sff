@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ko4edikov/sff/pkg/auth"
+	"github.com/ko4edikov/sff/pkg/progress"
 	"github.com/ko4edikov/sff/pkg/sfapi"
 )
 
@@ -76,7 +77,7 @@ func runQuery(ctx context.Context, soql string, format outFormat, outFile string
 		queryFn = client.QueryTooling
 	}
 
-	prog := startProgress("querying " + org.Username)
+	prog := progress.Start("querying " + org.Username)
 	start := time.Now()
 	records, total, err := queryFn(ctx, soql)
 	elapsed := time.Since(start)
