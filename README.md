@@ -201,15 +201,16 @@ Notes:
 - **`--tooling`** is a fast path for the daily edit loop, deploying via the
   Tooling API instead of a Metadata API round-trip. Apex/Visualforce
   (`ApexClass`/`ApexTrigger`/`ApexPage`/`ApexComponent`) go through a
-  `MetadataContainer`; Aura bundles upsert their `AuraDefinition`s by DefType —
-  both **must already exist in the org** (referenced by id). `StaticResource`s
-  are upserted directly (created if absent). `-d` deploys the supported
-  components under a dir and skips the rest, while `-m`/`-x` reject unsupported
-  types and wildcards. `--check-only` works for Apex/VF but is rejected when
-  static resources or Aura are in the selection (the Tooling API has no
+  `MetadataContainer`; Aura bundles upsert their `AuraDefinition`s by DefType and
+  LWC bundles upsert their `LightningComponentResource`s by file path — all
+  **must already exist in the org** (referenced by id). `StaticResource`s are
+  upserted directly (created if absent). `-d` deploys the supported components
+  under a dir and skips the rest, while `-m`/`-x` reject unsupported types and
+  wildcards. `--check-only` works for Apex/VF but is rejected when static
+  resources, Aura, or LWC are in the selection (the Tooling API has no
   validate-only mode for them). `--metadata-format`, `--ignore-errors`,
   `--ignore-warnings`, and `--test-level`/`--tests` do not apply and are
-  rejected. (LWC is not yet supported here — use a regular Metadata API deploy.)
+  rejected.
 - `--check-only` validates without saving; `--test-level` (`NoTestRun`,
   `RunSpecifiedTests` with `--tests`, `RunLocalTests`, `RunAllTestsInOrg`)
   controls Apex tests; `--dry-run` builds the package and prints the manifest
@@ -271,7 +272,7 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
 - [x] source-format decomposition for `CustomObject`/`CustomObjectTranslation`/`Bot` (byte-identical to sf)
 - [x] source-format conversion for `StaticResource` (content-type rename + archive expansion)
 - [x] `sff diff` — compare local Apex/LWC/Aura against the org (Tooling API)
-- [x] `sff deploy` — Metadata API deploy from source format: `-d` dir / `-m`/`-x` members (recompose + `package.xml`), `--check-only`/`--test-level`/`--dry-run`/`--metadata-format`/`--ignore-errors`/`--wait`; `--tooling` fast Apex/VF deploy via the Tooling API
+- [x] `sff deploy` — Metadata API deploy from source format: `-d` dir / `-m`/`-x` members (recompose + `package.xml`), `--check-only`/`--test-level`/`--dry-run`/`--metadata-format`/`--ignore-errors`/`--wait`; `--tooling` fast deploy via the Tooling API (Apex/VF + Aura/LWC + static resources)
 - [ ] `sff apex run`, `sff data get/create/update/delete`
 
 ## Build

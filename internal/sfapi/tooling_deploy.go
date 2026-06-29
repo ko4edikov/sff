@@ -43,17 +43,34 @@ type ToolingAuraBundle struct {
 	Files []AuraFile
 }
 
+// LwcFile is one resource within an LWC bundle: its FilePath (e.g.
+// "lwc/myCmp/myCmp.js"), Format (file extension), and source text.
+type LwcFile struct {
+	FilePath string
+	Format   string
+	Source   string
+}
+
+// ToolingLwcBundle is one Lightning web component bundle to upsert (the bundle
+// must already exist in the org; its resources are created or updated by path).
+type ToolingLwcBundle struct {
+	Name  string
+	Files []LwcFile
+}
+
 // ToolingDeployInput groups what to deploy by the mechanism each kind needs:
 // Apex/Visualforce go through a MetadataContainer (compiled, check-only capable),
-// while static resources and Aura bundles are upserted as plain Tooling records.
+// while static resources, Aura, and LWC bundles are upserted as plain Tooling
+// records.
 type ToolingDeployInput struct {
 	Apex   []ToolingComponent
 	Static []ToolingStaticResource
 	Aura   []ToolingAuraBundle
+	Lwc    []ToolingLwcBundle
 }
 
 func (in ToolingDeployInput) isEmpty() bool {
-	return len(in.Apex) == 0 && len(in.Static) == 0 && len(in.Aura) == 0
+	return len(in.Apex) == 0 && len(in.Static) == 0 && len(in.Aura) == 0 && len(in.Lwc) == 0
 }
 
 // CompileError is one component failure reported by a container deploy.
@@ -113,7 +130,93 @@ func (c *Client) ToolingDeploy(ctx context.Context, in ToolingDeployInput, check
 			return res, err
 		}
 	}
+	if len(in.Lwc) > 0 {
+		r, err := c.deployLwc(ctx, in.Lwc, progress)
+		if r != nil {
+			res.Succeeded = append(res.Succeeded, r.Succeeded...)
+			res.Errors = append(res.Errors, r.Errors...)
+		}
+		if err != nil {
+			return res, err
+		}
+	}
 	return res, nil
+}
+
+// deployLwc upserts each LWC bundle's resources directly (LWC is not
+// container-deployable). The bundle must already exist; each local file becomes
+// a LightningComponentResource matched to an existing row by FilePath (updated)
+// or created.
+func (c *Client) deployLwc(ctx context.Context, bundles []ToolingLwcBundle, progress func(state string)) (*ToolingDeployResult, error) {
+	res := &ToolingDeployResult{}
+	for _, b := range bundles {
+		if progress != nil {
+			progress("LWC " + b.Name)
+		}
+		bundleID, err := c.singleID(ctx, "LightningComponentBundle", "DeveloperName", b.Name)
+		if err != nil {
+			return res, err
+		}
+		if bundleID == "" {
+			res.Errors = append(res.Errors, CompileError{
+				Component: "LightningComponentBundle:" + b.Name,
+				Problem:   "not present in org (create it first with a Metadata API deploy, then use --tooling)",
+			})
+			continue
+		}
+		existing, err := c.lwcResourceIDs(ctx, bundleID)
+		if err != nil {
+			return res, err
+		}
+
+		bundleErr := false
+		for _, f := range b.Files {
+			var derr error
+			if id := existing[f.FilePath]; id != "" {
+				derr = c.updateSObject(ctx, "LightningComponentResource", id, map[string]any{"Source": f.Source})
+			} else {
+				_, derr = c.createSObject(ctx, "LightningComponentResource", map[string]any{
+					"LightningComponentBundleId": bundleID,
+					"FilePath":                   f.FilePath,
+					"Format":                     f.Format,
+					"Source":                     f.Source,
+				})
+			}
+			if derr != nil {
+				res.Errors = append(res.Errors, CompileError{Component: "LightningComponentResource:" + f.FilePath, Problem: derr.Error()})
+				bundleErr = true
+			}
+		}
+		if !bundleErr {
+			res.Succeeded = append(res.Succeeded, "LightningComponentBundle:"+b.Name)
+		}
+	}
+	if len(res.Errors) > 0 {
+		return res, fmt.Errorf("lwc deploy failed")
+	}
+	return res, nil
+}
+
+// lwcResourceIDs maps each existing LightningComponentResource in a bundle to its
+// id, keyed by FilePath.
+func (c *Client) lwcResourceIDs(ctx context.Context, bundleID string) (map[string]string, error) {
+	soql := fmt.Sprintf("SELECT Id, FilePath FROM LightningComponentResource WHERE LightningComponentBundleId = '%s'", bundleID)
+	records, _, err := c.QueryTooling(ctx, soql)
+	if err != nil {
+		return nil, fmt.Errorf("look up lwc resources: %w", err)
+	}
+	out := map[string]string{}
+	for _, rec := range records {
+		var r struct {
+			ID       string `json:"Id"`
+			FilePath string `json:"FilePath"`
+		}
+		if err := json.Unmarshal(rec, &r); err != nil {
+			return nil, err
+		}
+		out[r.FilePath] = r.ID
+	}
+	return out, nil
 }
 
 // deployAura upserts each Aura bundle's definitions directly (Aura is not

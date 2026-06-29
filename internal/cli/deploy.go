@@ -47,9 +47,9 @@ func newDeployCmd() *cobra.Command {
 			"successfully deployed components instead of rolling back on failure, and -w/--wait\n" +
 			"bounds how long to wait before returning while the deploy keeps running server-side.\n" +
 			"Use --tooling for a fast deploy via the Tooling API (ApexClass/ApexTrigger/\n" +
-			"ApexPage/ApexComponent and Aura bundles — which must already exist in the org —\n" +
-			"plus StaticResource) — much quicker than a Metadata API round-trip for the daily\n" +
-			"edit loop.",
+			"ApexPage/ApexComponent and Aura/LWC bundles — which must already exist in the\n" +
+			"org — plus StaticResource) — much quicker than a Metadata API round-trip for the\n" +
+			"daily edit loop.",
 		Example: `  sff deploy -d force-app/main/default
   sff deploy -m ApexClass:MyClass -m LWC:myCmp
   sff deploy -x manifest/package.xml --check-only
@@ -100,7 +100,7 @@ func newDeployCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&tests, "tests", nil, "Apex test class to run (repeatable; requires -l RunSpecifiedTests)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "build the package and print the manifest without deploying")
 	cmd.Flags().BoolVar(&metadataFormat, "metadata-format", false, "deploy the -d directory as-is (already metadata format with package.xml)")
-	cmd.Flags().BoolVar(&tooling, "tooling", false, "fast deploy via the Tooling API (existing Apex/VF + Aura, plus static resources)")
+	cmd.Flags().BoolVar(&tooling, "tooling", false, "fast deploy via the Tooling API (existing Apex/VF + Aura/LWC, plus static resources)")
 	cmd.Flags().BoolVar(&ignoreWarnings, "ignore-warnings", false, "succeed even if the deploy reports warnings")
 	cmd.Flags().BoolVar(&ignoreErrors, "ignore-errors", false, "don't roll back on failure; keep components that deployed successfully")
 	cmd.Flags().IntVarP(&wait, "wait", "w", 0, "minutes to wait for the deploy to finish (0 = wait indefinitely)")
@@ -285,12 +285,13 @@ func printDeployFailures(res *mdapi.DeployResult) {
 
 // toolingSupported is the set of metadata types --tooling can deploy.
 var toolingSupported = map[string]bool{
-	"ApexClass":            true,
-	"ApexTrigger":          true,
-	"ApexPage":             true,
-	"ApexComponent":        true,
-	"StaticResource":       true,
-	"AuraDefinitionBundle": true,
+	"ApexClass":                true,
+	"ApexTrigger":              true,
+	"ApexPage":                 true,
+	"ApexComponent":            true,
+	"StaticResource":           true,
+	"AuraDefinitionBundle":     true,
+	"LightningComponentBundle": true,
 }
 
 // incompatibleWithTooling returns a description of the first flag that cannot be
@@ -328,12 +329,12 @@ func runToolingDeploy(ctx context.Context, sel deploySelection, apiVersion strin
 	for _, s := range skipped {
 		fmt.Fprintf(os.Stderr, "skipping %s (not deployable via --tooling)\n", s)
 	}
-	total := len(in.Apex) + len(in.Static) + len(in.Aura)
+	total := len(in.Apex) + len(in.Static) + len(in.Aura) + len(in.Lwc)
 	if total == 0 {
-		return fmt.Errorf("no Apex/Visualforce/static-resource/Aura components to deploy via --tooling")
+		return fmt.Errorf("no Apex/Visualforce/static-resource/Aura/LWC components to deploy via --tooling")
 	}
-	if checkOnly && (len(in.Static) > 0 || len(in.Aura) > 0) {
-		return fmt.Errorf("--check-only cannot be used with static resources or Aura (the Tooling API has no validate-only mode for them); drop --check-only or deploy them via the Metadata API")
+	if checkOnly && (len(in.Static) > 0 || len(in.Aura) > 0 || len(in.Lwc) > 0) {
+		return fmt.Errorf("--check-only cannot be used with static resources, Aura, or LWC (the Tooling API has no validate-only mode for them); drop --check-only or deploy them via the Metadata API")
 	}
 
 	if dryRun {
@@ -346,6 +347,9 @@ func runToolingDeploy(ctx context.Context, sel deploySelection, apiVersion strin
 		}
 		for _, a := range in.Aura {
 			fmt.Printf("  AuraDefinitionBundle:%s (%d file(s))\n", a.Name, len(a.Files))
+		}
+		for _, l := range in.Lwc {
+			fmt.Printf("  LightningComponentBundle:%s (%d file(s))\n", l.Name, len(l.Files))
 		}
 		return nil
 	}
@@ -396,6 +400,7 @@ func resolveToolingComponents(sel deploySelection, version string) (in sfapi.Too
 	staticBody := map[string][]byte{}
 	staticMeta := map[string][]byte{}
 	auraFiles := map[string][]sfapi.AuraFile{}
+	lwcFiles := map[string][]sfapi.LwcFile{}
 	skip := map[string]bool{}
 	for p, data := range rec.Entries {
 		folder, _, _ := strings.Cut(p, "/")
@@ -431,6 +436,12 @@ func resolveToolingComponents(sel deploySelection, version string) (in sfapi.Too
 					auraFiles[segs[1]] = append(auraFiles[segs[1]], sfapi.AuraFile{DefType: defType, Format: format, Source: string(data)})
 				}
 			}
+		case "lwc":
+			segs := strings.Split(p, "/")
+			if len(segs) >= 2 {
+				format := strings.TrimPrefix(path.Ext(base), ".")
+				lwcFiles[segs[1]] = append(lwcFiles[segs[1]], sfapi.LwcFile{FilePath: p, Format: format, Source: string(data)})
+			}
 		default:
 			skip[skipLabel(p)] = true
 		}
@@ -450,9 +461,15 @@ func resolveToolingComponents(sel deploySelection, version string) (in sfapi.Too
 		in.Aura = append(in.Aura, sfapi.ToolingAuraBundle{Name: name, Files: files})
 	}
 
+	for name, files := range lwcFiles {
+		sort.Slice(files, func(i, j int) bool { return files[i].FilePath < files[j].FilePath })
+		in.Lwc = append(in.Lwc, sfapi.ToolingLwcBundle{Name: name, Files: files})
+	}
+
 	sort.Slice(in.Apex, func(i, j int) bool { return in.Apex[i].Name < in.Apex[j].Name })
 	sort.Slice(in.Static, func(i, j int) bool { return in.Static[i].Name < in.Static[j].Name })
 	sort.Slice(in.Aura, func(i, j int) bool { return in.Aura[i].Name < in.Aura[j].Name })
+	sort.Slice(in.Lwc, func(i, j int) bool { return in.Lwc[i].Name < in.Lwc[j].Name })
 	for s := range skip {
 		skipped = append(skipped, s)
 	}
