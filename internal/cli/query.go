@@ -14,8 +14,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ko4edikov/sff/internal/auth"
-	"github.com/ko4edikov/sff/internal/sfapi"
+	"github.com/ko4edikov/sff/pkg/auth"
+	"github.com/ko4edikov/sff/pkg/sfapi"
 )
 
 func newQueryCmd() *cobra.Command {

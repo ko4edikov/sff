@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ko4edikov/sff/internal/auth"
+	"github.com/ko4edikov/sff/pkg/auth"
 )
 
 // toolingServer stands in for the org, driving ToolingDeploy through its flow.

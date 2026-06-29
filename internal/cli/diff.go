@@ -17,9 +17,9 @@ import (
 	"github.com/pmezard/go-difflib/difflib"
 	"github.com/spf13/cobra"
 
-	"github.com/ko4edikov/sff/internal/auth"
-	"github.com/ko4edikov/sff/internal/sfapi"
-	"github.com/ko4edikov/sff/internal/source"
+	"github.com/ko4edikov/sff/pkg/auth"
+	"github.com/ko4edikov/sff/pkg/sfapi"
+	"github.com/ko4edikov/sff/pkg/source"
 )
 
 func newDiffCmd() *cobra.Command {

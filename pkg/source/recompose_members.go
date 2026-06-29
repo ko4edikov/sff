@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ko4edikov/sff/internal/mdapi"
-	"github.com/ko4edikov/sff/internal/project"
+	"github.com/ko4edikov/sff/pkg/mdapi"
+	"github.com/ko4edikov/sff/pkg/project"
 )
 
 // typeToDirFallback reverses dirToType, mapping a Metadata API type back to its

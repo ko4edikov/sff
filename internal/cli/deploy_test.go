@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ko4edikov/sff/internal/mdapi"
+	"github.com/ko4edikov/sff/pkg/mdapi"
 )
 
 func TestResolveTestLevel(t *testing.T) {

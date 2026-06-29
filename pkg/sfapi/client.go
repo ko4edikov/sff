@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/ko4edikov/sff/internal/auth"
+	"github.com/ko4edikov/sff/pkg/auth"
 )
 
 // DefaultAPIVersion is used when none is specified. Salesforce keeps old

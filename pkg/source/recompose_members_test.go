@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ko4edikov/sff/internal/mdapi"
-	"github.com/ko4edikov/sff/internal/project"
+	"github.com/ko4edikov/sff/pkg/mdapi"
+	"github.com/ko4edikov/sff/pkg/project"
 )
 
 // writeProject lays out a minimal sfdx project (default package "force-app")

@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/ko4edikov/sff/internal/auth"
-	"github.com/ko4edikov/sff/internal/sfapi"
+	"github.com/ko4edikov/sff/pkg/auth"
+	"github.com/ko4edikov/sff/pkg/sfapi"
 )
 
 // Client issues Metadata API SOAP calls against a single org.

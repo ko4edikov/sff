@@ -11,8 +11,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/ko4edikov/sff/internal/mdapi"
-	"github.com/ko4edikov/sff/internal/project"
+	"github.com/ko4edikov/sff/pkg/mdapi"
+	"github.com/ko4edikov/sff/pkg/project"
 )
 
 // contentFolders is the fallback set of metadata whose files copy verbatim

@@ -11,8 +11,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ko4edikov/sff/internal/mdapi"
-	"github.com/ko4edikov/sff/internal/project"
+	"github.com/ko4edikov/sff/pkg/mdapi"
+	"github.com/ko4edikov/sff/pkg/project"
 )
 
 // RecomposeResult is the outcome of a source→metadata recompose: the

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ko4edikov/sff/internal/sfapi"
+	"github.com/ko4edikov/sff/pkg/sfapi"
 )
 
 // RemoteFile is one file's source as it exists in the org. Rel is empty for a

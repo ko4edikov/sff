@@ -9,11 +9,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ko4edikov/sff/internal/auth"
-	"github.com/ko4edikov/sff/internal/mdapi"
-	"github.com/ko4edikov/sff/internal/project"
-	"github.com/ko4edikov/sff/internal/sfapi"
-	"github.com/ko4edikov/sff/internal/source"
+	"github.com/ko4edikov/sff/pkg/auth"
+	"github.com/ko4edikov/sff/pkg/mdapi"
+	"github.com/ko4edikov/sff/pkg/project"
+	"github.com/ko4edikov/sff/pkg/sfapi"
+	"github.com/ko4edikov/sff/pkg/source"
 )
 
 func newRetrieveCmd() *cobra.Command {
