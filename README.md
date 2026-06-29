@@ -201,14 +201,15 @@ Notes:
 - **`--tooling`** is a fast path for the daily edit loop, deploying via the
   Tooling API instead of a Metadata API round-trip. Apex/Visualforce
   (`ApexClass`/`ApexTrigger`/`ApexPage`/`ApexComponent`) go through a
-  `MetadataContainer` and **must already exist in the org** (referenced by id);
-  `StaticResource`s are upserted directly. `-d` deploys the supported components
-  under a dir and skips the rest, while `-m`/`-x` reject unsupported types and
-  wildcards. `--check-only` works for Apex/VF but is rejected when static
-  resources are in the selection (the Tooling API has no validate-only mode for
-  them). `--metadata-format`, `--ignore-errors`, `--ignore-warnings`, and
-  `--test-level`/`--tests` do not apply and are rejected. (Aura and LWC are not
-  yet supported here — use a regular Metadata API deploy.)
+  `MetadataContainer`; Aura bundles upsert their `AuraDefinition`s by DefType —
+  both **must already exist in the org** (referenced by id). `StaticResource`s
+  are upserted directly (created if absent). `-d` deploys the supported
+  components under a dir and skips the rest, while `-m`/`-x` reject unsupported
+  types and wildcards. `--check-only` works for Apex/VF but is rejected when
+  static resources or Aura are in the selection (the Tooling API has no
+  validate-only mode for them). `--metadata-format`, `--ignore-errors`,
+  `--ignore-warnings`, and `--test-level`/`--tests` do not apply and are
+  rejected. (LWC is not yet supported here — use a regular Metadata API deploy.)
 - `--check-only` validates without saving; `--test-level` (`NoTestRun`,
   `RunSpecifiedTests` with `--tests`, `RunLocalTests`, `RunAllTestsInOrg`)
   controls Apex tests; `--dry-run` builds the package and prints the manifest

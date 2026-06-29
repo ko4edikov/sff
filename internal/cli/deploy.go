@@ -47,8 +47,9 @@ func newDeployCmd() *cobra.Command {
 			"successfully deployed components instead of rolling back on failure, and -w/--wait\n" +
 			"bounds how long to wait before returning while the deploy keeps running server-side.\n" +
 			"Use --tooling for a fast deploy via the Tooling API (ApexClass/ApexTrigger/\n" +
-			"ApexPage/ApexComponent — which must already exist in the org — plus StaticResource)\n" +
-			"— much quicker than a Metadata API round-trip for the daily edit loop.",
+			"ApexPage/ApexComponent and Aura bundles — which must already exist in the org —\n" +
+			"plus StaticResource) — much quicker than a Metadata API round-trip for the daily\n" +
+			"edit loop.",
 		Example: `  sff deploy -d force-app/main/default
   sff deploy -m ApexClass:MyClass -m LWC:myCmp
   sff deploy -x manifest/package.xml --check-only
@@ -99,7 +100,7 @@ func newDeployCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&tests, "tests", nil, "Apex test class to run (repeatable; requires -l RunSpecifiedTests)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "build the package and print the manifest without deploying")
 	cmd.Flags().BoolVar(&metadataFormat, "metadata-format", false, "deploy the -d directory as-is (already metadata format with package.xml)")
-	cmd.Flags().BoolVar(&tooling, "tooling", false, "fast deploy via the Tooling API (existing Apex/VF + static resources)")
+	cmd.Flags().BoolVar(&tooling, "tooling", false, "fast deploy via the Tooling API (existing Apex/VF + Aura, plus static resources)")
 	cmd.Flags().BoolVar(&ignoreWarnings, "ignore-warnings", false, "succeed even if the deploy reports warnings")
 	cmd.Flags().BoolVar(&ignoreErrors, "ignore-errors", false, "don't roll back on failure; keep components that deployed successfully")
 	cmd.Flags().IntVarP(&wait, "wait", "w", 0, "minutes to wait for the deploy to finish (0 = wait indefinitely)")
@@ -284,11 +285,12 @@ func printDeployFailures(res *mdapi.DeployResult) {
 
 // toolingSupported is the set of metadata types --tooling can deploy.
 var toolingSupported = map[string]bool{
-	"ApexClass":      true,
-	"ApexTrigger":    true,
-	"ApexPage":       true,
-	"ApexComponent":  true,
-	"StaticResource": true,
+	"ApexClass":            true,
+	"ApexTrigger":          true,
+	"ApexPage":             true,
+	"ApexComponent":        true,
+	"StaticResource":       true,
+	"AuraDefinitionBundle": true,
 }
 
 // incompatibleWithTooling returns a description of the first flag that cannot be
@@ -326,12 +328,12 @@ func runToolingDeploy(ctx context.Context, sel deploySelection, apiVersion strin
 	for _, s := range skipped {
 		fmt.Fprintf(os.Stderr, "skipping %s (not deployable via --tooling)\n", s)
 	}
-	total := len(in.Apex) + len(in.Static)
+	total := len(in.Apex) + len(in.Static) + len(in.Aura)
 	if total == 0 {
-		return fmt.Errorf("no Apex/Visualforce/static-resource components to deploy via --tooling")
+		return fmt.Errorf("no Apex/Visualforce/static-resource/Aura components to deploy via --tooling")
 	}
-	if checkOnly && len(in.Static) > 0 {
-		return fmt.Errorf("--check-only cannot be used with static resources (the Tooling API has no validate-only mode for them); drop --check-only or deploy them via the Metadata API")
+	if checkOnly && (len(in.Static) > 0 || len(in.Aura) > 0) {
+		return fmt.Errorf("--check-only cannot be used with static resources or Aura (the Tooling API has no validate-only mode for them); drop --check-only or deploy them via the Metadata API")
 	}
 
 	if dryRun {
@@ -341,6 +343,9 @@ func runToolingDeploy(ctx context.Context, sel deploySelection, apiVersion strin
 		}
 		for _, s := range in.Static {
 			fmt.Printf("  StaticResource:%s\n", s.Name)
+		}
+		for _, a := range in.Aura {
+			fmt.Printf("  AuraDefinitionBundle:%s (%d file(s))\n", a.Name, len(a.Files))
 		}
 		return nil
 	}
@@ -390,6 +395,7 @@ func resolveToolingComponents(sel deploySelection, version string) (in sfapi.Too
 
 	staticBody := map[string][]byte{}
 	staticMeta := map[string][]byte{}
+	auraFiles := map[string][]sfapi.AuraFile{}
 	skip := map[string]bool{}
 	for p, data := range rec.Entries {
 		folder, _, _ := strings.Cut(p, "/")
@@ -418,6 +424,13 @@ func resolveToolingComponents(sel deploySelection, version string) (in sfapi.Too
 			case strings.HasSuffix(base, ".resource-meta.xml"):
 				staticMeta[strings.TrimSuffix(base, ".resource-meta.xml")] = data
 			}
+		case "aura":
+			segs := strings.Split(p, "/")
+			if len(segs) >= 2 {
+				if defType, format, ok := auraDef(base); ok {
+					auraFiles[segs[1]] = append(auraFiles[segs[1]], sfapi.AuraFile{DefType: defType, Format: format, Source: string(data)})
+				}
+			}
 		default:
 			skip[skipLabel(p)] = true
 		}
@@ -432,8 +445,14 @@ func resolveToolingComponents(sel deploySelection, version string) (in sfapi.Too
 		in.Static = append(in.Static, sfapi.ToolingStaticResource{Name: name, ContentType: ct, CacheControl: cc, Body: body})
 	}
 
+	for name, files := range auraFiles {
+		sort.Slice(files, func(i, j int) bool { return files[i].DefType < files[j].DefType })
+		in.Aura = append(in.Aura, sfapi.ToolingAuraBundle{Name: name, Files: files})
+	}
+
 	sort.Slice(in.Apex, func(i, j int) bool { return in.Apex[i].Name < in.Apex[j].Name })
 	sort.Slice(in.Static, func(i, j int) bool { return in.Static[i].Name < in.Static[j].Name })
+	sort.Slice(in.Aura, func(i, j int) bool { return in.Aura[i].Name < in.Aura[j].Name })
 	for s := range skip {
 		skipped = append(skipped, s)
 	}
@@ -479,6 +498,43 @@ func recomposeToolingEntries(sel deploySelection, version string) (*source.Recom
 		return nil, err
 	}
 	return source.RecomposeMembers(proj, pkg, version, nil)
+}
+
+// auraDef maps an Aura bundle file name to its AuraDefinition DefType and Format,
+// or ok=false for files that aren't Aura definitions (e.g. a bundle -meta.xml).
+func auraDef(file string) (defType, format string, ok bool) {
+	if strings.HasSuffix(file, "-meta.xml") {
+		return "", "", false
+	}
+	switch {
+	case strings.HasSuffix(file, "Controller.js"):
+		return "CONTROLLER", "JS", true
+	case strings.HasSuffix(file, "Helper.js"):
+		return "HELPER", "JS", true
+	case strings.HasSuffix(file, "Renderer.js"):
+		return "RENDERER", "JS", true
+	}
+	switch strings.ToLower(path.Ext(file)) {
+	case ".cmp":
+		return "COMPONENT", "XML", true
+	case ".app":
+		return "APPLICATION", "XML", true
+	case ".evt":
+		return "EVENT", "XML", true
+	case ".intf":
+		return "INTERFACE", "XML", true
+	case ".tokens":
+		return "TOKENS", "XML", true
+	case ".design":
+		return "DESIGN", "XML", true
+	case ".auradoc":
+		return "DOCUMENTATION", "XML", true
+	case ".svg":
+		return "SVG", "SVG", true
+	case ".css":
+		return "STYLE", "CSS", true
+	}
+	return "", "", false
 }
 
 // skipLabel summarizes an unsupported entry path as "folder/name" for reporting.

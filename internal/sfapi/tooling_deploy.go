@@ -28,16 +28,32 @@ type ToolingStaticResource struct {
 	Body         []byte
 }
 
+// AuraFile is one definition within an Aura bundle: its DefType (COMPONENT,
+// CONTROLLER, HELPER, STYLE, …), Format (XML/JS/CSS/SVG), and source text.
+type AuraFile struct {
+	DefType string
+	Format  string
+	Source  string
+}
+
+// ToolingAuraBundle is one Aura bundle to upsert (the bundle must already exist
+// in the org; its definitions are created or updated per DefType).
+type ToolingAuraBundle struct {
+	Name  string
+	Files []AuraFile
+}
+
 // ToolingDeployInput groups what to deploy by the mechanism each kind needs:
 // Apex/Visualforce go through a MetadataContainer (compiled, check-only capable),
-// while static resources are upserted as plain Tooling records.
+// while static resources and Aura bundles are upserted as plain Tooling records.
 type ToolingDeployInput struct {
 	Apex   []ToolingComponent
 	Static []ToolingStaticResource
+	Aura   []ToolingAuraBundle
 }
 
 func (in ToolingDeployInput) isEmpty() bool {
-	return len(in.Apex) == 0 && len(in.Static) == 0
+	return len(in.Apex) == 0 && len(in.Static) == 0 && len(in.Aura) == 0
 }
 
 // CompileError is one component failure reported by a container deploy.
@@ -87,7 +103,113 @@ func (c *Client) ToolingDeploy(ctx context.Context, in ToolingDeployInput, check
 			return res, err
 		}
 	}
+	if len(in.Aura) > 0 {
+		r, err := c.deployAura(ctx, in.Aura, progress)
+		if r != nil {
+			res.Succeeded = append(res.Succeeded, r.Succeeded...)
+			res.Errors = append(res.Errors, r.Errors...)
+		}
+		if err != nil {
+			return res, err
+		}
+	}
 	return res, nil
+}
+
+// deployAura upserts each Aura bundle's definitions directly (Aura is not
+// container-deployable). The bundle must already exist in the org; each local
+// file becomes an AuraDefinition matched to an existing row by DefType (updated)
+// or created. Per-file/per-bundle failures are collected.
+func (c *Client) deployAura(ctx context.Context, bundles []ToolingAuraBundle, progress func(state string)) (*ToolingDeployResult, error) {
+	res := &ToolingDeployResult{}
+	for _, b := range bundles {
+		if progress != nil {
+			progress("Aura " + b.Name)
+		}
+		bundleID, err := c.singleID(ctx, "AuraDefinitionBundle", "DeveloperName", b.Name)
+		if err != nil {
+			return res, err
+		}
+		if bundleID == "" {
+			res.Errors = append(res.Errors, CompileError{
+				Component: "AuraDefinitionBundle:" + b.Name,
+				Problem:   "not present in org (create it first with a Metadata API deploy, then use --tooling)",
+			})
+			continue
+		}
+		existing, err := c.auraDefIDs(ctx, bundleID)
+		if err != nil {
+			return res, err
+		}
+
+		bundleErr := false
+		for _, f := range b.Files {
+			var derr error
+			if id := existing[f.DefType]; id != "" {
+				derr = c.updateSObject(ctx, "AuraDefinition", id, map[string]any{"Source": f.Source})
+			} else {
+				_, derr = c.createSObject(ctx, "AuraDefinition", map[string]any{
+					"AuraDefinitionBundleId": bundleID,
+					"DefType":                f.DefType,
+					"Format":                 f.Format,
+					"Source":                 f.Source,
+				})
+			}
+			if derr != nil {
+				res.Errors = append(res.Errors, CompileError{Component: "AuraDefinition:" + b.Name + "/" + f.DefType, Problem: derr.Error()})
+				bundleErr = true
+			}
+		}
+		if !bundleErr {
+			res.Succeeded = append(res.Succeeded, "AuraDefinitionBundle:"+b.Name)
+		}
+	}
+	if len(res.Errors) > 0 {
+		return res, fmt.Errorf("aura deploy failed")
+	}
+	return res, nil
+}
+
+// auraDefIDs maps each existing AuraDefinition in a bundle to its id, keyed by
+// DefType.
+func (c *Client) auraDefIDs(ctx context.Context, bundleID string) (map[string]string, error) {
+	soql := fmt.Sprintf("SELECT Id, DefType FROM AuraDefinition WHERE AuraDefinitionBundleId = '%s'", bundleID)
+	records, _, err := c.QueryTooling(ctx, soql)
+	if err != nil {
+		return nil, fmt.Errorf("look up aura definitions: %w", err)
+	}
+	out := map[string]string{}
+	for _, rec := range records {
+		var r struct {
+			ID      string `json:"Id"`
+			DefType string `json:"DefType"`
+		}
+		if err := json.Unmarshal(rec, &r); err != nil {
+			return nil, err
+		}
+		out[r.DefType] = r.ID
+	}
+	return out, nil
+}
+
+// singleID returns the id of the one record of typ whose field equals value, or
+// "" when none match.
+func (c *Client) singleID(ctx context.Context, typ, field, value string) (string, error) {
+	soql := fmt.Sprintf("SELECT Id FROM %s WHERE %s = '%s'", typ, field, strings.ReplaceAll(value, "'", "\\'"))
+	records, _, err := c.QueryTooling(ctx, soql)
+	if err != nil {
+		return "", fmt.Errorf("look up %s: %w", typ, err)
+	}
+	if len(records) == 0 {
+		return "", nil
+	}
+	var r struct {
+		ID string `json:"Id"`
+	}
+	if err := json.Unmarshal(records[0], &r); err != nil {
+		return "", err
+	}
+	return r.ID, nil
 }
 
 // deployApexContainer compiles and saves comps through a MetadataContainer +
