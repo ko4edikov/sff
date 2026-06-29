@@ -140,6 +140,74 @@ func TestToolingDeploy_StaticResources(t *testing.T) {
 	}
 }
 
+func TestToolingDeploy_Aura(t *testing.T) {
+	var posted, patched int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, q := r.URL.Path, r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(p, "tooling/query") && strings.Contains(q, "DefType"):
+			// COMPONENT already exists; CONTROLLER is new.
+			_, _ = w.Write([]byte(`{"totalSize":1,"done":true,"records":[{"Id":"1ttxx","DefType":"COMPONENT"}]}`))
+		case strings.Contains(p, "tooling/query") && strings.Contains(q, "AuraDefinitionBundle"):
+			_, _ = w.Write([]byte(`{"totalSize":1,"done":true,"records":[{"Id":"0Abxx"}]}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(p, "/AuraDefinition"):
+			posted++
+			_, _ = w.Write([]byte(`{"id":"1ttyy","success":true}`))
+		case r.Method == http.MethodPatch && strings.Contains(p, "/AuraDefinition/1ttxx"):
+			patched++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected request %s %s?%s", r.Method, p, q)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := &Client{
+		Org:        &auth.Org{InstanceURL: srv.URL, AccessToken: "tok", Username: "me@test"},
+		APIVersion: "v60.0",
+		HTTP:       srv.Client(),
+	}
+
+	in := ToolingDeployInput{Aura: []ToolingAuraBundle{{Name: "myCmp", Files: []AuraFile{
+		{DefType: "COMPONENT", Format: "XML", Source: "<aura:component/>"},
+		{DefType: "CONTROLLER", Format: "JS", Source: "({})"},
+	}}}}
+	res, err := c.ToolingDeploy(context.Background(), in, false, nil)
+	if err != nil {
+		t.Fatalf("ToolingDeploy: %v", err)
+	}
+	if patched != 1 || posted != 1 {
+		t.Errorf("patched=%d posted=%d, want 1/1", patched, posted)
+	}
+	if len(res.Succeeded) != 1 || res.Succeeded[0] != "AuraDefinitionBundle:myCmp" {
+		t.Errorf("Succeeded = %v", res.Succeeded)
+	}
+}
+
+func TestToolingDeploy_AuraMissingBundle(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Bundle lookup returns nothing.
+		_, _ = w.Write([]byte(`{"totalSize":0,"done":true,"records":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := &Client{
+		Org:        &auth.Org{InstanceURL: srv.URL, AccessToken: "tok", Username: "me@test"},
+		APIVersion: "v60.0",
+		HTTP:       srv.Client(),
+	}
+
+	in := ToolingDeployInput{Aura: []ToolingAuraBundle{{Name: "ghost", Files: []AuraFile{{DefType: "COMPONENT", Format: "XML", Source: "x"}}}}}
+	res, err := c.ToolingDeploy(context.Background(), in, false, nil)
+	if err == nil {
+		t.Fatal("want error for missing bundle, got nil")
+	}
+	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Problem, "not present in org") {
+		t.Errorf("Errors = %+v", res.Errors)
+	}
+}
+
 func TestToolingError(t *testing.T) {
 	body := []byte(`[{"message":"Invalid type: Foo","errorCode":"INVALID_TYPE"}]`)
 	err := toolingError(http.StatusBadRequest, body)

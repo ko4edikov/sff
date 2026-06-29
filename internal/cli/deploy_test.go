@@ -103,6 +103,8 @@ func TestResolveToolingComponents(t *testing.T) {
 		write("staticresources/Baz.txt", "hello")
 		write("staticresources/Baz.resource-meta.xml",
 			`<?xml version="1.0"?><StaticResource><contentType>text/plain</contentType><cacheControl>Public</cacheControl></StaticResource>`)
+		write("aura/myAura/myAura.cmp", "<aura:component/>")
+		write("aura/myAura/myAuraController.js", "({})")
 		write("lwc/myCmp/myCmp.js", "export default {}")
 
 		in, skipped, err := resolveToolingComponents(deploySelection{sourceDir: dir}, "60.0")
@@ -124,6 +126,13 @@ func TestResolveToolingComponents(t *testing.T) {
 		if string(in.Static[0].Body) != "hello" {
 			t.Errorf("static body = %q", in.Static[0].Body)
 		}
+		if len(in.Aura) != 1 || in.Aura[0].Name != "myAura" || len(in.Aura[0].Files) != 2 {
+			t.Fatalf("Aura = %+v", in.Aura)
+		}
+		// Files are sorted by DefType: COMPONENT then CONTROLLER.
+		if in.Aura[0].Files[0].DefType != "COMPONENT" || in.Aura[0].Files[1].DefType != "CONTROLLER" {
+			t.Errorf("aura files = %+v", in.Aura[0].Files)
+		}
 		if len(skipped) != 1 || skipped[0] != "lwc/myCmp" {
 			t.Errorf("skipped = %v", skipped)
 		}
@@ -142,6 +151,34 @@ func TestResolveToolingComponents(t *testing.T) {
 			t.Fatalf("want wildcard error, got %v", err)
 		}
 	})
+}
+
+func TestAuraDef(t *testing.T) {
+	cases := []struct {
+		file, defType, format string
+		ok                    bool
+	}{
+		{"myCmp.cmp", "COMPONENT", "XML", true},
+		{"myApp.app", "APPLICATION", "XML", true},
+		{"myEvt.evt", "EVENT", "XML", true},
+		{"myIntf.intf", "INTERFACE", "XML", true},
+		{"my.tokens", "TOKENS", "XML", true},
+		{"myCmp.design", "DESIGN", "XML", true},
+		{"myCmp.auradoc", "DOCUMENTATION", "XML", true},
+		{"myCmp.svg", "SVG", "SVG", true},
+		{"myCmp.css", "STYLE", "CSS", true},
+		{"myCmpController.js", "CONTROLLER", "JS", true},
+		{"myCmpHelper.js", "HELPER", "JS", true},
+		{"myCmpRenderer.js", "RENDERER", "JS", true},
+		{"myCmp.cmp-meta.xml", "", "", false},
+		{"README.md", "", "", false},
+	}
+	for _, c := range cases {
+		dt, fm, ok := auraDef(c.file)
+		if ok != c.ok || dt != c.defType || fm != c.format {
+			t.Errorf("auraDef(%q) = (%q,%q,%v), want (%q,%q,%v)", c.file, dt, fm, ok, c.defType, c.format, c.ok)
+		}
+	}
 }
 
 func TestIncompatibleWithTooling(t *testing.T) {
