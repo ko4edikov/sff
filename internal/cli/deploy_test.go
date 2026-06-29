@@ -106,6 +106,8 @@ func TestResolveToolingComponents(t *testing.T) {
 		write("aura/myAura/myAura.cmp", "<aura:component/>")
 		write("aura/myAura/myAuraController.js", "({})")
 		write("lwc/myCmp/myCmp.js", "export default {}")
+		write("lwc/myCmp/myCmp.js-meta.xml", "<LightningComponentBundle/>")
+		write("flows/myFlow.flow-meta.xml", "<Flow/>")
 
 		in, skipped, err := resolveToolingComponents(deploySelection{sourceDir: dir}, "60.0")
 		if err != nil {
@@ -133,7 +135,14 @@ func TestResolveToolingComponents(t *testing.T) {
 		if in.Aura[0].Files[0].DefType != "COMPONENT" || in.Aura[0].Files[1].DefType != "CONTROLLER" {
 			t.Errorf("aura files = %+v", in.Aura[0].Files)
 		}
-		if len(skipped) != 1 || skipped[0] != "lwc/myCmp" {
+		if len(in.Lwc) != 1 || in.Lwc[0].Name != "myCmp" || len(in.Lwc[0].Files) != 2 {
+			t.Fatalf("Lwc = %+v", in.Lwc)
+		}
+		// FilePath carries the full lwc/<bundle>/<file> path.
+		if in.Lwc[0].Files[0].FilePath != "lwc/myCmp/myCmp.js" {
+			t.Errorf("lwc file path = %q", in.Lwc[0].Files[0].FilePath)
+		}
+		if len(skipped) != 1 || skipped[0] != "flows/myFlow.flow" {
 			t.Errorf("skipped = %v", skipped)
 		}
 	})

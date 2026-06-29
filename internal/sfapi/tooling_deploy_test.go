@@ -208,6 +208,51 @@ func TestToolingDeploy_AuraMissingBundle(t *testing.T) {
 	}
 }
 
+func TestToolingDeploy_Lwc(t *testing.T) {
+	var posted, patched int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, q := r.URL.Path, r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(p, "tooling/query") && strings.Contains(q, "FilePath"):
+			// myCmp.js already exists; myCmp.html is new.
+			_, _ = w.Write([]byte(`{"totalSize":1,"done":true,"records":[{"Id":"0Rrxx","FilePath":"lwc/myCmp/myCmp.js"}]}`))
+		case strings.Contains(p, "tooling/query") && strings.Contains(q, "LightningComponentBundle"):
+			_, _ = w.Write([]byte(`{"totalSize":1,"done":true,"records":[{"Id":"0Roxx"}]}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(p, "/LightningComponentResource"):
+			posted++
+			_, _ = w.Write([]byte(`{"id":"0Rryy","success":true}`))
+		case r.Method == http.MethodPatch && strings.Contains(p, "/LightningComponentResource/0Rrxx"):
+			patched++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected request %s %s?%s", r.Method, p, q)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := &Client{
+		Org:        &auth.Org{InstanceURL: srv.URL, AccessToken: "tok", Username: "me@test"},
+		APIVersion: "v60.0",
+		HTTP:       srv.Client(),
+	}
+
+	in := ToolingDeployInput{Lwc: []ToolingLwcBundle{{Name: "myCmp", Files: []LwcFile{
+		{FilePath: "lwc/myCmp/myCmp.js", Format: "js", Source: "export default {}"},
+		{FilePath: "lwc/myCmp/myCmp.html", Format: "html", Source: "<template></template>"},
+	}}}}
+	res, err := c.ToolingDeploy(context.Background(), in, false, nil)
+	if err != nil {
+		t.Fatalf("ToolingDeploy: %v", err)
+	}
+	if patched != 1 || posted != 1 {
+		t.Errorf("patched=%d posted=%d, want 1/1", patched, posted)
+	}
+	if len(res.Succeeded) != 1 || res.Succeeded[0] != "LightningComponentBundle:myCmp" {
+		t.Errorf("Succeeded = %v", res.Succeeded)
+	}
+}
+
 func TestToolingError(t *testing.T) {
 	body := []byte(`[{"message":"Invalid type: Foo","errorCode":"INVALID_TYPE"}]`)
 	err := toolingError(http.StatusBadRequest, body)
