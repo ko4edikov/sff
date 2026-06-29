@@ -18,16 +18,29 @@ import (
 // versions available, so a slightly conservative default is safe.
 const DefaultAPIVersion = "v60.0"
 
+// DefaultBatchConcurrency is how many composite/batch HTTP calls a query may
+// keep in flight at once when accelerating pagination.
+const DefaultBatchConcurrency = 10
+
 // Client issues authenticated REST calls against a single org.
 type Client struct {
 	Org        *auth.Org
 	APIVersion string
 	HTTP       *http.Client
+	// BatchConcurrency bounds the number of concurrent composite/batch calls
+	// used to accelerate multi-page queries. Zero or less falls back to
+	// DefaultBatchConcurrency.
+	BatchConcurrency int
 }
 
 // New returns a Client for org using the default API version.
 func New(org *auth.Org) *Client {
-	return &Client{Org: org, APIVersion: DefaultAPIVersion, HTTP: http.DefaultClient}
+	return &Client{
+		Org:              org,
+		APIVersion:       DefaultAPIVersion,
+		HTTP:             http.DefaultClient,
+		BatchConcurrency: DefaultBatchConcurrency,
+	}
 }
 
 // do executes an authenticated request against an instance-relative path

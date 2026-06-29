@@ -21,6 +21,7 @@ import (
 func newQueryCmd() *cobra.Command {
 	var asJSON, asCSV, useTooling bool
 	var outFile string
+	var concurrency int
 	cmd := &cobra.Command{
 		Use:   "query <soql>",
 		Short: "Run a SOQL query",
@@ -41,13 +42,14 @@ func newQueryCmd() *cobra.Command {
 			} else if asCSV {
 				format = formatCSV
 			}
-			return runQuery(cmd.Context(), soql, format, outFile, useTooling)
+			return runQuery(cmd.Context(), soql, format, outFile, useTooling, concurrency)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output raw JSON records")
 	cmd.Flags().BoolVar(&asCSV, "csv", false, "output CSV")
 	cmd.Flags().StringVarP(&outFile, "out-file", "f", "", "write the result to a file instead of stdout")
 	cmd.Flags().BoolVarP(&useTooling, "use-tooling-api", "t", false, "query the Tooling API (e.g. ApexClass, Flow, CustomField)")
+	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", sfapi.DefaultBatchConcurrency, "max parallel composite/batch calls when paginating large results")
 	cmd.MarkFlagsMutuallyExclusive("json", "csv")
 	addTargetOrgFlag(cmd)
 	return cmd
@@ -61,13 +63,14 @@ const (
 	formatCSV
 )
 
-func runQuery(ctx context.Context, soql string, format outFormat, outFile string, useTooling bool) error {
+func runQuery(ctx context.Context, soql string, format outFormat, outFile string, useTooling bool, concurrency int) error {
 	org, err := auth.Resolve(targetOrg)
 	if err != nil {
 		return err
 	}
 
 	client := sfapi.New(org)
+	client.BatchConcurrency = concurrency
 	queryFn := client.Query
 	if useTooling {
 		queryFn = client.QueryTooling
