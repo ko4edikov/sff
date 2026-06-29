@@ -57,7 +57,7 @@ func newDeployCmd() *cobra.Command {
   sff deploy -d ./mdapi --metadata-format
   sff deploy -m ApexClass --dry-run
   sff deploy -d force-app --ignore-errors -w 10
-  sff deploy -m ApexClass:MyClass --tooling`,
+  sff deploy -m ApexClass:MyClass -t`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if sourceDir == "" && len(metadata) == 0 && manifest == "" {
@@ -100,7 +100,7 @@ func newDeployCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&tests, "tests", nil, "Apex test class to run (repeatable; requires -l RunSpecifiedTests)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "build the package and print the manifest without deploying")
 	cmd.Flags().BoolVar(&metadataFormat, "metadata-format", false, "deploy the -d directory as-is (already metadata format with package.xml)")
-	cmd.Flags().BoolVar(&tooling, "tooling", false, "fast deploy via the Tooling API (existing Apex/VF + Aura/LWC, plus static resources)")
+	cmd.Flags().BoolVarP(&tooling, "tooling", "t", false, "fast deploy via the Tooling API (existing Apex/VF + Aura/LWC, plus static resources)")
 	cmd.Flags().BoolVar(&ignoreWarnings, "ignore-warnings", false, "succeed even if the deploy reports warnings")
 	cmd.Flags().BoolVar(&ignoreErrors, "ignore-errors", false, "don't roll back on failure; keep components that deployed successfully")
 	cmd.Flags().IntVarP(&wait, "wait", "w", 0, "minutes to wait for the deploy to finish (0 = wait indefinitely)")

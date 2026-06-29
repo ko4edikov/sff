@@ -177,7 +177,7 @@ sff deploy -m ApexClass                                    # bare type = all mem
 sff deploy -x manifest/package.xml --check-only            # from a manifest, validate only
 sff deploy -d force-app -l RunSpecifiedTests --tests MyTest # run specific Apex tests
 sff deploy -d ./mdapi --metadata-format                    # deploy a metadata-format dir as-is
-sff deploy -m ApexClass:MyClass --tooling                  # fast Apex/VF deploy via the Tooling API
+sff deploy -m ApexClass:MyClass -t                         # fast Tooling-API deploy (--tooling)
 sff deploy -m ApexClass:MyClass --dry-run                  # build & print the manifest, don't deploy
 ```
 
