@@ -264,8 +264,8 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
 
 ## Roadmap
 
-- [x] `internal/auth` — read `sf` auth files, Keychain decrypt, token refresh
-- [x] `internal/sfapi` — REST client with auto-refresh on 401
+- [x] `pkg/auth` — read `sf` auth files, Keychain decrypt, token refresh
+- [x] `pkg/sfapi` — REST client with auto-refresh on 401
 - [x] `sff query "SELECT ..."` — SOQL with pagination, table / `--json` / `--csv` output (~0.3s)
 - [x] `sff retrieve` — Metadata API (SOAP), `-m`/`-x`, source-format by default (`--metadata-format` for raw)
 - [x] `sff org list metadata-types` — describeMetadata catalog (cached in `~/.sff`)
@@ -274,6 +274,72 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
 - [x] `sff diff` — compare local Apex/LWC/Aura against the org (Tooling API)
 - [x] `sff deploy` — Metadata API deploy from source format: `-d` dir / `-m`/`-x` members (recompose + `package.xml`), `--check-only`/`--test-level`/`--dry-run`/`--metadata-format`/`--ignore-errors`/`--wait`; `--tooling` fast deploy via the Tooling API (Apex/VF + Aura/LWC + static resources)
 - [ ] `sff apex run`, `sff data get/create/update/delete`
+
+## Use as a library (`pkg/`)
+
+The CLI is a thin cobra wrapper (`internal/cli`) over reusable packages under
+`pkg/`. They're importable on their own, so you can build a different CLI, an
+HTTP service, or a one-off script on top of the same credential handling and
+API clients:
+
+```sh
+go get github.com/ko4edikov/sff/pkg/sfapi
+```
+
+| Package | What it gives you |
+|---|---|
+| `pkg/auth` | Resolve `sf`'s stored credentials (`auth.Resolve(alias)`, `""` = default org), Keychain decrypt, token refresh. |
+| `pkg/sfapi` | REST + Tooling client with auto-refresh on 401: `Query`, `QueryTooling`, `ToolingDeploy`, plus `Columns`/`Field` record helpers. |
+| `pkg/mdapi` | Metadata API SOAP client: `Deploy`/`DeployAndWait`, `Retrieve`/`RetrieveAndWait`, `DescribeMetadata`, and zip/manifest helpers. |
+| `pkg/source` | Source-format ↔ metadata-format conversion (decompose/recompose, static resources). |
+| `pkg/project` | Locate and read the surrounding sfdx project. |
+
+A minimal query, reusing the same credentials as the CLI:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/ko4edikov/sff/pkg/auth"
+	"github.com/ko4edikov/sff/pkg/sfapi"
+)
+
+func main() {
+	// "" = the configured default org; pass an alias or username otherwise.
+	org, err := auth.Resolve("")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	client := sfapi.New(org) // auto-refreshes the access token on a 401
+	records, total, err := client.Query(context.Background(),
+		"SELECT Id, Name FROM Account LIMIT 5")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("%d total\n", total)
+	for _, r := range records {
+		fmt.Println(sfapi.Field(r, "Name"))
+	}
+}
+```
+
+The Metadata API client is silent by default; opt into verbose SOAP tracing by
+setting a `Logger` (the CLI does this from `SFF_DEBUG`):
+
+```go
+md := mdapi.New(org)
+md.Logger = mdapi.NewWriterLogger(os.Stderr, "[mdapi] ") // nil = no tracing
+res, err := md.DeployAndWait(ctx, zipBytes, mdapi.DeployOptions{}, nil)
+```
+
+`internal/cli` stays internal — it's the wrapper, not the API. Everything meant
+for reuse lives under `pkg/`.
 
 ## Build
 
