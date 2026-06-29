@@ -99,8 +99,9 @@ func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string) er
 // differs (only meaningful for the built-in unified-diff fallback; viewer mode
 // reports false).
 func diffTarget(ctx context.Context, client *sfapi.Client, t *source.Target, viewer string) (bool, error) {
-	fmt.Fprintf(os.Stderr, "Querying %s from org…\n", t.Name)
+	prog := startProgress(fmt.Sprintf("querying %s from org", t.Name))
 	files, err := source.Fetch(ctx, client, t)
+	prog.Stop()
 	if err != nil {
 		return false, err
 	}

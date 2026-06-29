@@ -179,11 +179,12 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 		defer cancel()
 	}
 	start := time.Now()
+	prog := startProgress(verb)
 	res, err := client.DeployAndWait(ctx, zipBytes, opts, func(attempt int, r *mdapi.DeployResult) {
-		fmt.Fprintf(os.Stderr, "\r%s… %s (%d/%d components)",
-			verb, r.Status, r.NumberComponentsDeployed, r.NumberComponentsTotal)
+		prog.Update(fmt.Sprintf("%s — %s (%d/%d components)",
+			verb, r.Status, r.NumberComponentsDeployed, r.NumberComponentsTotal))
 	})
-	fmt.Fprintln(os.Stderr)
+	prog.Stop()
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			id := ""
@@ -364,10 +365,11 @@ func runToolingDeploy(ctx context.Context, sel deploySelection, apiVersion strin
 		verb = "validating"
 	}
 	start := time.Now()
+	prog := startProgress(verb)
 	res, err := client.ToolingDeploy(ctx, in, checkOnly, func(state string) {
-		fmt.Fprintf(os.Stderr, "\r%s… %s", verb, state)
+		prog.Update(fmt.Sprintf("%s — %s", verb, state))
 	})
-	fmt.Fprintln(os.Stderr)
+	prog.Stop()
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			fmt.Fprintf(os.Stderr, "timed out after %s; the tooling deploy may still be running in %s\n", fmtDuration(wait), org.Username)

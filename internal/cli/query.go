@@ -76,9 +76,11 @@ func runQuery(ctx context.Context, soql string, format outFormat, outFile string
 		queryFn = client.QueryTooling
 	}
 
+	prog := startProgress("querying " + org.Username)
 	start := time.Now()
 	records, total, err := queryFn(ctx, soql)
 	elapsed := time.Since(start)
+	prog.Stop()
 	if err != nil {
 		return err
 	}
@@ -206,18 +208,23 @@ func writeTable(w io.Writer, records []json.RawMessage, total int) error {
 		return err
 	}
 
+	// Prepend a 1-based row-number column ("#") to the human-readable table.
+	// CSV/JSON output is left untouched so it stays a drop-in for sf consumers.
+	header := append([]string{"#"}, cols...)
+
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, strings.Join(cols, "\t"))
-	seps := make([]string, len(cols))
-	for i, c := range cols {
+	fmt.Fprintln(tw, strings.Join(header, "\t"))
+	seps := make([]string, len(header))
+	for i, c := range header {
 		seps[i] = strings.Repeat("─", len([]rune(c)))
 	}
 	fmt.Fprintln(tw, strings.Join(seps, "\t"))
 
-	for _, rec := range records {
-		vals := make([]string, len(cols))
+	for idx, rec := range records {
+		vals := make([]string, len(cols)+1)
+		vals[0] = strconv.Itoa(idx + 1)
 		for i, c := range cols {
-			vals[i] = sfapi.Field(rec, c)
+			vals[i+1] = sfapi.Field(rec, c)
 		}
 		fmt.Fprintln(tw, strings.Join(vals, "\t"))
 	}

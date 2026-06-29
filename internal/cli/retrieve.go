@@ -84,10 +84,11 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, pr
 	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
 
 	start := time.Now()
+	prog := startProgress("retrieving")
 	res, err := client.RetrieveAndWait(ctx, pkg, func(attempt int) {
-		fmt.Fprintf(os.Stderr, "\rretrieving… (poll %d)", attempt)
+		prog.Update(fmt.Sprintf("retrieving (poll %d)", attempt))
 	})
-	fmt.Fprintln(os.Stderr)
+	prog.Stop()
 	if err != nil {
 		return err
 	}
