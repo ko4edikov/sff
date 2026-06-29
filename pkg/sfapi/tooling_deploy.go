@@ -143,10 +143,54 @@ func (c *Client) ToolingDeploy(ctx context.Context, in ToolingDeployInput, check
 	return res, nil
 }
 
+// upsertOp is one create-or-update of a Tooling sObject within a composite
+// batch. label identifies it in error reporting ("StaticResource:Foo").
+type upsertOp struct {
+	label  string
+	method string // POST (create) or PATCH (update)
+	url    string // collection path for POST, record path for PATCH
+	fields map[string]any
+}
+
+// runUpserts executes ops via Tooling composite with allOrNone=false (each op
+// stands alone, so one bad record doesn't hide the rest), chunked to
+// MaxCompositeSubrequests. It returns, per op index, nil on success or that op's
+// error. A transport-level failure (not a per-op failure) returns a non-nil
+// error and a nil slice.
+func (c *Client) runUpserts(ctx context.Context, ops []upsertOp) ([]error, error) {
+	errs := make([]error, len(ops))
+	for start := 0; start < len(ops); start += MaxCompositeSubrequests {
+		end := min(start+MaxCompositeSubrequests, len(ops))
+		subs := make([]compositeSub, 0, end-start)
+		for i := start; i < end; i++ {
+			body, err := json.Marshal(ops[i].fields)
+			if err != nil {
+				return nil, err
+			}
+			subs = append(subs, compositeSub{
+				Method:      ops[i].method,
+				URL:         ops[i].url,
+				ReferenceID: fmt.Sprintf("op%d", i-start),
+				Body:        body,
+			})
+		}
+		results, err := c.toolingComposite(ctx, false, subs)
+		if err != nil {
+			return nil, err
+		}
+		for j, r := range results {
+			if r.HTTPStatusCode >= 300 {
+				errs[start+j] = toolingError(r.HTTPStatusCode, r.Body)
+			}
+		}
+	}
+	return errs, nil
+}
+
 // deployLwc upserts each LWC bundle's resources directly (LWC is not
 // container-deployable). The bundle must already exist; each local file becomes
 // a LightningComponentResource matched to an existing row by FilePath (updated)
-// or created.
+// or created. A bundle's files are pushed in one composite batch.
 func (c *Client) deployLwc(ctx context.Context, bundles []ToolingLwcBundle, progress func(state string)) (*ToolingDeployResult, error) {
 	res := &ToolingDeployResult{}
 	for _, b := range bundles {
@@ -169,21 +213,37 @@ func (c *Client) deployLwc(ctx context.Context, bundles []ToolingLwcBundle, prog
 			return res, err
 		}
 
-		bundleErr := false
-		for _, f := range b.Files {
-			var derr error
+		ops := make([]upsertOp, len(b.Files))
+		for i, f := range b.Files {
 			if id := existing[f.FilePath]; id != "" {
-				derr = c.updateSObject(ctx, "LightningComponentResource", id, map[string]any{"Source": f.Source})
+				ops[i] = upsertOp{
+					label:  "LightningComponentResource:" + f.FilePath,
+					method: "PATCH",
+					url:    c.toolingSObjectPath("LightningComponentResource", id),
+					fields: map[string]any{"Source": f.Source},
+				}
 			} else {
-				_, derr = c.createSObject(ctx, "LightningComponentResource", map[string]any{
-					"LightningComponentBundleId": bundleID,
-					"FilePath":                   f.FilePath,
-					"Format":                     f.Format,
-					"Source":                     f.Source,
-				})
+				ops[i] = upsertOp{
+					label:  "LightningComponentResource:" + f.FilePath,
+					method: "POST",
+					url:    c.toolingSObjectPath("LightningComponentResource", ""),
+					fields: map[string]any{
+						"LightningComponentBundleId": bundleID,
+						"FilePath":                   f.FilePath,
+						"Format":                     f.Format,
+						"Source":                     f.Source,
+					},
+				}
 			}
-			if derr != nil {
-				res.Errors = append(res.Errors, CompileError{Component: "LightningComponentResource:" + f.FilePath, Problem: derr.Error()})
+		}
+		opErrs, err := c.runUpserts(ctx, ops)
+		if err != nil {
+			return res, err
+		}
+		bundleErr := false
+		for i, e := range opErrs {
+			if e != nil {
+				res.Errors = append(res.Errors, CompileError{Component: ops[i].label, Problem: e.Error()})
 				bundleErr = true
 			}
 		}
@@ -245,21 +305,37 @@ func (c *Client) deployAura(ctx context.Context, bundles []ToolingAuraBundle, pr
 			return res, err
 		}
 
-		bundleErr := false
-		for _, f := range b.Files {
-			var derr error
+		ops := make([]upsertOp, len(b.Files))
+		for i, f := range b.Files {
 			if id := existing[f.DefType]; id != "" {
-				derr = c.updateSObject(ctx, "AuraDefinition", id, map[string]any{"Source": f.Source})
+				ops[i] = upsertOp{
+					label:  "AuraDefinition:" + b.Name + "/" + f.DefType,
+					method: "PATCH",
+					url:    c.toolingSObjectPath("AuraDefinition", id),
+					fields: map[string]any{"Source": f.Source},
+				}
 			} else {
-				_, derr = c.createSObject(ctx, "AuraDefinition", map[string]any{
-					"AuraDefinitionBundleId": bundleID,
-					"DefType":                f.DefType,
-					"Format":                 f.Format,
-					"Source":                 f.Source,
-				})
+				ops[i] = upsertOp{
+					label:  "AuraDefinition:" + b.Name + "/" + f.DefType,
+					method: "POST",
+					url:    c.toolingSObjectPath("AuraDefinition", ""),
+					fields: map[string]any{
+						"AuraDefinitionBundleId": bundleID,
+						"DefType":                f.DefType,
+						"Format":                 f.Format,
+						"Source":                 f.Source,
+					},
+				}
 			}
-			if derr != nil {
-				res.Errors = append(res.Errors, CompileError{Component: "AuraDefinition:" + b.Name + "/" + f.DefType, Problem: derr.Error()})
+		}
+		opErrs, err := c.runUpserts(ctx, ops)
+		if err != nil {
+			return res, err
+		}
+		bundleErr := false
+		for i, e := range opErrs {
+			if e != nil {
+				res.Errors = append(res.Errors, CompileError{Component: ops[i].label, Problem: e.Error()})
 				bundleErr = true
 			}
 		}
@@ -339,36 +415,95 @@ func (c *Client) deployApexContainer(ctx context.Context, comps []ToolingCompone
 			strings.Join(missing, ", "))
 	}
 
-	containerID, err := c.createSObject(ctx, "MetadataContainer", map[string]any{
-		"Name": fmt.Sprintf("sff_%d", time.Now().UnixNano()),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create MetadataContainer: %w", err)
+	containerID, reqID, err := c.stageApexContainer(ctx, comps, ids, checkOnly)
+	if containerID != "" {
+		// Containers linger on the org otherwise; clean up regardless of outcome.
+		defer func() {
+			_ = c.deleteSObject(context.WithoutCancel(ctx), "MetadataContainer", containerID)
+		}()
 	}
-	// Containers linger on the org otherwise; clean up regardless of outcome.
-	defer func() {
-		_ = c.deleteSObject(context.WithoutCancel(ctx), "MetadataContainer", containerID)
-	}()
+	if err != nil {
+		return nil, err
+	}
 
-	for _, comp := range comps {
-		if _, err := c.createSObject(ctx, comp.Type+"Member", map[string]any{
-			"MetadataContainerId": containerID,
+	return c.pollContainerRequest(ctx, reqID, comps, checkOnly, progress)
+}
+
+// stageApexContainer creates a MetadataContainer, stages every component as a
+// <Type>Member, and submits a ContainerAsyncRequest, returning the container id
+// (for cleanup) and the async request id (to poll). It collapses what used to be
+// N+2 sequential round-trips into Tooling composite calls: when container(1) +
+// members(N) + request(1) fit one call (the typical 1–3 class edit loop) it is a
+// single all-or-none round-trip, with members chained off @{container.id}.
+// Otherwise the container is created on its own, its members are chunked with the
+// literal container id, and the request is submitted last.
+func (c *Client) stageApexContainer(ctx context.Context, comps []ToolingComponent, ids map[string]string, checkOnly bool) (containerID, reqID string, err error) {
+	containerName := fmt.Sprintf("sff_%d", time.Now().UnixNano())
+	containerURL := c.toolingSObjectPath("MetadataContainer", "")
+	requestURL := c.toolingSObjectPath("ContainerAsyncRequest", "")
+	memberFields := func(comp ToolingComponent, parent string) map[string]any {
+		return map[string]any{
+			"MetadataContainerId": parent,
 			"ContentEntityId":     ids[compKey(comp.Type, comp.Name)],
 			"Body":                comp.Body,
-		}); err != nil {
-			return nil, fmt.Errorf("stage %s:%s: %w", comp.Type, comp.Name, err)
 		}
 	}
 
-	reqID, err := c.createSObject(ctx, "ContainerAsyncRequest", map[string]any{
+	// container(1) + request(1) leaves room for the members in a single call.
+	if len(comps) <= MaxCompositeSubrequests-2 {
+		subs := []compositeSub{compositeCreate("container", containerURL, map[string]any{"Name": containerName})}
+		for i, comp := range comps {
+			subs = append(subs, compositeCreate(fmt.Sprintf("member%d", i),
+				c.toolingSObjectPath(comp.Type+"Member", ""), memberFields(comp, "@{container.id}")))
+		}
+		subs = append(subs, compositeCreate("request", requestURL, map[string]any{
+			"MetadataContainerId": "@{container.id}",
+			"IsCheckOnly":         checkOnly,
+		}))
+
+		results, err := c.toolingComposite(ctx, true, subs)
+		if err != nil {
+			return "", "", err
+		}
+		byRef := compositeIDs(results)
+		// With allOrNone a failure rolls the whole set back, but the container
+		// record may still surface its id; return it so cleanup can run.
+		if cerr := compositeFirstError(results); cerr != nil {
+			return byRef["container"], "", fmt.Errorf("stage container: %w", cerr)
+		}
+		return byRef["container"], byRef["request"], nil
+	}
+
+	// Too many members for one call: create the container, then chunk the members
+	// (literal id, no chaining needed), then submit the request.
+	containerID, err = c.createSObject(ctx, "MetadataContainer", map[string]any{"Name": containerName})
+	if err != nil {
+		return "", "", fmt.Errorf("create MetadataContainer: %w", err)
+	}
+	for start := 0; start < len(comps); start += MaxCompositeSubrequests {
+		end := min(start+MaxCompositeSubrequests, len(comps))
+		subs := make([]compositeSub, 0, end-start)
+		for i := start; i < end; i++ {
+			comp := comps[i]
+			subs = append(subs, compositeCreate(fmt.Sprintf("member%d", i),
+				c.toolingSObjectPath(comp.Type+"Member", ""), memberFields(comp, containerID)))
+		}
+		results, err := c.toolingComposite(ctx, true, subs)
+		if err != nil {
+			return containerID, "", err
+		}
+		if cerr := compositeFirstError(results); cerr != nil {
+			return containerID, "", fmt.Errorf("stage members: %w", cerr)
+		}
+	}
+	reqID, err = c.createSObject(ctx, "ContainerAsyncRequest", map[string]any{
 		"MetadataContainerId": containerID,
 		"IsCheckOnly":         checkOnly,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("submit ContainerAsyncRequest: %w", err)
+		return containerID, "", fmt.Errorf("submit ContainerAsyncRequest: %w", err)
 	}
-
-	return c.pollContainerRequest(ctx, reqID, comps, checkOnly, progress)
+	return containerID, reqID, nil
 }
 
 // pollContainerRequest waits for a ContainerAsyncRequest to finish, mapping its
@@ -526,11 +661,11 @@ func (c *Client) upsertStaticResources(ctx context.Context, rs []ToolingStaticRe
 		return nil, err
 	}
 
-	res := &ToolingDeployResult{}
-	for _, r := range rs {
-		if progress != nil {
-			progress("StaticResource " + r.Name)
-		}
+	if progress != nil {
+		progress(fmt.Sprintf("StaticResource (%d)", len(rs)))
+	}
+	ops := make([]upsertOp, len(rs))
+	for i, r := range rs {
 		cache := r.CacheControl
 		if cache == "" {
 			cache = "Private"
@@ -540,18 +675,25 @@ func (c *Client) upsertStaticResources(ctx context.Context, rs []ToolingStaticRe
 			"CacheControl": cache,
 			"Body":         base64.StdEncoding.EncodeToString(r.Body),
 		}
-		var derr error
 		if id := ids[r.Name]; id != "" {
-			derr = c.updateSObject(ctx, "StaticResource", id, fields)
+			ops[i] = upsertOp{label: "StaticResource:" + r.Name, method: "PATCH", url: c.toolingSObjectPath("StaticResource", id), fields: fields}
 		} else {
 			fields["Name"] = r.Name
-			_, derr = c.createSObject(ctx, "StaticResource", fields)
+			ops[i] = upsertOp{label: "StaticResource:" + r.Name, method: "POST", url: c.toolingSObjectPath("StaticResource", ""), fields: fields}
 		}
-		if derr != nil {
-			res.Errors = append(res.Errors, CompileError{Component: "StaticResource:" + r.Name, Problem: derr.Error()})
+	}
+
+	opErrs, err := c.runUpserts(ctx, ops)
+	if err != nil {
+		return nil, err
+	}
+	res := &ToolingDeployResult{}
+	for i, e := range opErrs {
+		if e != nil {
+			res.Errors = append(res.Errors, CompileError{Component: ops[i].label, Problem: e.Error()})
 			continue
 		}
-		res.Succeeded = append(res.Succeeded, "StaticResource:"+r.Name)
+		res.Succeeded = append(res.Succeeded, ops[i].label)
 	}
 	if len(res.Errors) > 0 {
 		return res, fmt.Errorf("static resource deploy failed")
@@ -583,22 +725,6 @@ func (c *Client) createSObject(ctx context.Context, typ string, fields map[strin
 		return "", fmt.Errorf("create %s returned no id: %s", typ, strings.TrimSpace(string(resp)))
 	}
 	return out.ID, nil
-}
-
-// updateSObject patches the given fields onto an existing Tooling sObject.
-func (c *Client) updateSObject(ctx context.Context, typ, id string, fields map[string]any) error {
-	body, err := json.Marshal(fields)
-	if err != nil {
-		return err
-	}
-	status, resp, err := c.requestJSON(ctx, "PATCH", c.toolingSObjectPath(typ, id), body)
-	if err != nil {
-		return err
-	}
-	if status >= 300 {
-		return toolingError(status, resp)
-	}
-	return nil
 }
 
 // deleteSObject removes a Tooling sObject; used for best-effort cleanup.

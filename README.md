@@ -273,13 +273,13 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
 - [x] source-format conversion for `StaticResource` (content-type rename + archive expansion)
 - [x] `sff diff` — compare local Apex/LWC/Aura against the org (Tooling API)
 - [x] `sff deploy` — Metadata API deploy from source format: `-d` dir / `-m`/`-x` members (recompose + `package.xml`), `--check-only`/`--test-level`/`--dry-run`/`--metadata-format`/`--ignore-errors`/`--wait`; `--tooling` fast deploy via the Tooling API (Apex/VF + Aura/LWC + static resources)
-- [ ] `--tooling` via **Tooling Composite** (`/services/data/vXX/tooling/composite`):
-  collapse the per-component sequential round-trips into one call. The Apex
+- [x] `--tooling` via **Tooling Composite** (`/services/data/vXX/tooling/composite`):
+  collapses the per-component sequential round-trips into one call. The Apex
   container flow chains `MetadataContainer` → `<Type>Member` (`@{container.id}`)
   → `ContainerAsyncRequest` in a single composite (≤25 subrequests, so ≤23
   members per call → chunk container/members/request when larger); Static/Aura/
   LWC upserts batch the same way (`allOrNone:false` to keep per-file errors).
-  Note: it's the *Tooling* composite, not the standard REST `/composite` (whose
+  It's the *Tooling* composite, not the standard REST `/composite` (whose
   subrequests are limited to a fixed resource set). Polling stays unchanged.
 - [ ] `sff apex run`, `sff data get/create/update/delete`
 

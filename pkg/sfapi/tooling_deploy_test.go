@@ -2,6 +2,8 @@ package sfapi
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +11,43 @@ import (
 
 	"github.com/ko4edikov/sff/pkg/auth"
 )
+
+// compositeSubReq is the test-side view of one Tooling composite subrequest.
+type compositeSubReq struct {
+	Method      string          `json:"method"`
+	URL         string          `json:"url"`
+	ReferenceID string          `json:"referenceId"`
+	Body        json.RawMessage `json:"body"`
+}
+
+// decodeComposite reads a Tooling composite request body into its subrequests.
+func decodeComposite(t *testing.T, r *http.Request) []compositeSubReq {
+	t.Helper()
+	var req struct {
+		AllOrNone        bool              `json:"allOrNone"`
+		CompositeRequest []compositeSubReq `json:"compositeRequest"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		t.Fatalf("decode composite request: %v", err)
+	}
+	return req.CompositeRequest
+}
+
+// writeComposite answers a composite request with one success result per
+// subrequest, in order: a POST yields 201 with an id derived from its
+// referenceId; a PATCH yields 204.
+func writeComposite(w http.ResponseWriter, subs []compositeSubReq) {
+	parts := make([]string, len(subs))
+	for i, s := range subs {
+		if s.Method == http.MethodPatch {
+			parts[i] = fmt.Sprintf(`{"referenceId":%q,"httpStatusCode":204,"body":null}`, s.ReferenceID)
+			continue
+		}
+		parts[i] = fmt.Sprintf(`{"referenceId":%q,"httpStatusCode":201,"body":{"id":%q,"success":true}}`,
+			s.ReferenceID, s.ReferenceID+"-id")
+	}
+	_, _ = fmt.Fprintf(w, `{"compositeResponse":[%s]}`, strings.Join(parts, ","))
+}
 
 // toolingServer stands in for the org, driving ToolingDeploy through its flow.
 // finalState is the ContainerAsyncRequest State returned by the status poll.
@@ -20,12 +59,9 @@ func toolingServer(t *testing.T, finalState, failBody string) *Client {
 		switch {
 		case strings.Contains(p, "tooling/query"):
 			_, _ = w.Write([]byte(`{"totalSize":1,"done":true,"records":[{"Id":"01pxx0000000001","Name":"Foo"}]}`))
-		case r.Method == http.MethodPost && strings.HasSuffix(p, "/MetadataContainer"):
-			_, _ = w.Write([]byte(`{"id":"0Mxxx","success":true}`))
-		case r.Method == http.MethodPost && strings.HasSuffix(p, "/ApexClassMember"):
-			_, _ = w.Write([]byte(`{"id":"0Vxxx","success":true}`))
-		case r.Method == http.MethodPost && strings.HasSuffix(p, "/ContainerAsyncRequest"):
-			_, _ = w.Write([]byte(`{"id":"1drxx","success":true}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(p, "tooling/composite"):
+			// Container + member(s) + ContainerAsyncRequest are staged in one call.
+			writeComposite(w, decodeComposite(t, r))
 		case r.Method == http.MethodGet && strings.Contains(p, "ContainerAsyncRequest/"):
 			if failBody != "" {
 				_, _ = w.Write([]byte(failBody))
@@ -103,12 +139,20 @@ func TestToolingDeploy_StaticResources(t *testing.T) {
 		case strings.Contains(p, "tooling/query"):
 			// "New" is absent; "Old" already exists with an id.
 			_, _ = w.Write([]byte(`{"totalSize":1,"done":true,"records":[{"Id":"081xx","Name":"Old"}]}`))
-		case r.Method == http.MethodPost && strings.HasSuffix(p, "/StaticResource"):
-			posted = true
-			_, _ = w.Write([]byte(`{"id":"081yy","success":true}`))
-		case r.Method == http.MethodPatch && strings.Contains(p, "/StaticResource/081xx"):
-			patched = true
-			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && strings.HasSuffix(p, "tooling/composite"):
+			subs := decodeComposite(t, r)
+			for _, s := range subs {
+				switch s.Method {
+				case http.MethodPost:
+					posted = true
+				case http.MethodPatch:
+					patched = true
+					if !strings.Contains(s.URL, "/StaticResource/081xx") {
+						t.Errorf("PATCH url = %s, want existing record path", s.URL)
+					}
+				}
+			}
+			writeComposite(w, subs)
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, p)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -151,12 +195,20 @@ func TestToolingDeploy_Aura(t *testing.T) {
 			_, _ = w.Write([]byte(`{"totalSize":1,"done":true,"records":[{"Id":"1ttxx","DefType":"COMPONENT"}]}`))
 		case strings.Contains(p, "tooling/query") && strings.Contains(q, "AuraDefinitionBundle"):
 			_, _ = w.Write([]byte(`{"totalSize":1,"done":true,"records":[{"Id":"0Abxx"}]}`))
-		case r.Method == http.MethodPost && strings.HasSuffix(p, "/AuraDefinition"):
-			posted++
-			_, _ = w.Write([]byte(`{"id":"1ttyy","success":true}`))
-		case r.Method == http.MethodPatch && strings.Contains(p, "/AuraDefinition/1ttxx"):
-			patched++
-			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && strings.HasSuffix(p, "tooling/composite"):
+			subs := decodeComposite(t, r)
+			for _, s := range subs {
+				switch s.Method {
+				case http.MethodPost:
+					posted++
+				case http.MethodPatch:
+					patched++
+					if !strings.Contains(s.URL, "/AuraDefinition/1ttxx") {
+						t.Errorf("PATCH url = %s, want existing definition path", s.URL)
+					}
+				}
+			}
+			writeComposite(w, subs)
 		default:
 			t.Errorf("unexpected request %s %s?%s", r.Method, p, q)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -219,12 +271,20 @@ func TestToolingDeploy_Lwc(t *testing.T) {
 			_, _ = w.Write([]byte(`{"totalSize":1,"done":true,"records":[{"Id":"0Rrxx","FilePath":"lwc/myCmp/myCmp.js"}]}`))
 		case strings.Contains(p, "tooling/query") && strings.Contains(q, "LightningComponentBundle"):
 			_, _ = w.Write([]byte(`{"totalSize":1,"done":true,"records":[{"Id":"0Roxx"}]}`))
-		case r.Method == http.MethodPost && strings.HasSuffix(p, "/LightningComponentResource"):
-			posted++
-			_, _ = w.Write([]byte(`{"id":"0Rryy","success":true}`))
-		case r.Method == http.MethodPatch && strings.Contains(p, "/LightningComponentResource/0Rrxx"):
-			patched++
-			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && strings.HasSuffix(p, "tooling/composite"):
+			subs := decodeComposite(t, r)
+			for _, s := range subs {
+				switch s.Method {
+				case http.MethodPost:
+					posted++
+				case http.MethodPatch:
+					patched++
+					if !strings.Contains(s.URL, "/LightningComponentResource/0Rrxx") {
+						t.Errorf("PATCH url = %s, want existing resource path", s.URL)
+					}
+				}
+			}
+			writeComposite(w, subs)
 		default:
 			t.Errorf("unexpected request %s %s?%s", r.Method, p, q)
 			w.WriteHeader(http.StatusInternalServerError)
