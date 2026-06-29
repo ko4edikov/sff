@@ -142,7 +142,7 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 	if err != nil {
 		return err
 	}
-	client := mdapi.New(org)
+	client := newMDClient(org)
 	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
 
 	entries, pkg, err := buildDeployPackage(ctx, client, sel, metadataFormat)

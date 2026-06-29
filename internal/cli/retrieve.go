@@ -80,7 +80,7 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, pr
 		}
 	}
 
-	client := mdapi.New(org)
+	client := newMDClient(org)
 	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
 
 	start := time.Now()

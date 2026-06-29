@@ -3,9 +3,24 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ko4edikov/sff/pkg/auth"
+	"github.com/ko4edikov/sff/pkg/mdapi"
 )
+
+// newMDClient builds a Metadata API client and, when SFF_DEBUG is set, wires a
+// stderr logger so verbose SOAP tracing keeps working at the CLI layer. The
+// mdapi package itself stays silent by default for library consumers.
+func newMDClient(org *auth.Org) *mdapi.Client {
+	c := mdapi.New(org)
+	if os.Getenv("SFF_DEBUG") != "" {
+		c.Logger = mdapi.NewWriterLogger(os.Stderr, "[sff:mdapi] ")
+	}
+	return c
+}
 
 // targetOrg holds the value of the --target-org/-o flag for whichever command
 // is running. It's added only to commands that act on a single org (not, say,

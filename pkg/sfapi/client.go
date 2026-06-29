@@ -1,5 +1,5 @@
 // Package sfapi is a thin Salesforce REST client built on the credentials read
-// by internal/auth. It transparently refreshes an expired access token once on
+// by pkg/auth. It transparently refreshes an expired access token once on
 // a 401 and retries the request.
 package sfapi
 

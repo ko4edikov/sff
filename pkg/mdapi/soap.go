@@ -1,7 +1,7 @@
 // Package mdapi is a minimal SOAP client for the Salesforce Metadata API,
-// built on the credentials from internal/auth. It hand-rolls SOAP envelopes
+// built on the credentials from pkg/auth. It hand-rolls SOAP envelopes
 // with encoding/xml (no dependency) and refreshes the session once on an
-// INVALID_SESSION_ID fault, mirroring the REST 401 retry in internal/sfapi.
+// INVALID_SESSION_ID fault, mirroring the REST 401 retry in pkg/sfapi.
 package mdapi
 
 import (
@@ -20,6 +20,8 @@ type Client struct {
 	Org        *auth.Org
 	APIVersion string // numeric, e.g. "60.0"
 	HTTP       *http.Client
+	// Logger, when non-nil, receives verbose SOAP tracing. Nil disables it.
+	Logger Logger
 }
 
 // New returns a Client for org using the default API version.

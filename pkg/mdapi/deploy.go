@@ -116,7 +116,7 @@ func (c *Client) Deploy(ctx context.Context, zipBytes []byte, opts DeployOptions
 	if err := xml.Unmarshal(raw, &env); err != nil {
 		return "", fmt.Errorf("parse deploy response: %w", err)
 	}
-	debugf("deploy response: id=%q done=%t state=%q", env.Result.ID, env.Result.Done, env.Result.State)
+	c.debugf("deploy response: id=%q done=%t state=%q", env.Result.ID, env.Result.Done, env.Result.State)
 	if env.Result.ID == "" {
 		return "", fmt.Errorf("deploy returned no job id: %s", snippet(raw))
 	}
@@ -139,7 +139,7 @@ func (c *Client) CheckDeployStatus(ctx context.Context, id string) (done bool, r
 		return false, nil, fmt.Errorf("parse checkDeployStatus response: %w", err)
 	}
 	r := env.Result
-	debugf("checkDeployStatus: done=%t status=%q success=%t comps=%d/%d errs=%d tests=%d/%d testErrs=%d",
+	c.debugf("checkDeployStatus: done=%t status=%q success=%t comps=%d/%d errs=%d tests=%d/%d testErrs=%d",
 		r.Done, r.Status, r.Success, r.NumberComponentsDeployed, r.NumberComponentsTotal,
 		r.NumberComponentErrors, r.NumberTestsCompleted, r.NumberTestsTotal, r.NumberTestErrors)
 

@@ -74,7 +74,7 @@ func runListMetadataTypes(ctx context.Context, apiVersion string, asJSON, refres
 	if err != nil {
 		return err
 	}
-	client := mdapi.New(org)
+	client := newMDClient(org)
 	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
 
 	res, cached, err := client.DescribeMetadataCached(ctx, refresh)
