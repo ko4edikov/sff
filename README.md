@@ -220,16 +220,21 @@ Notes:
 
 ## Comparing with the org (`sff diff`)
 
-Fetches a component's source from the org via the Tooling API and compares it
-with the local copy. Supports Apex flat files (`.cls`/`.trigger`/`.page`/
-`.component`) and LWC/Aura bundles. The target may be a path or a bare name
-(searched from the current directory).
+Fetches a component's source from the org and compares it with the local copy.
+Apex flat files (`.cls`/`.trigger`/`.page`/`.component`) and LWC/Aura bundles
+use the fast **Tooling API** path; the target may be a path or a bare name
+(searched from the current directory). **Any other metadata** is retrieved via
+the **Metadata API** and converted back to source format, so you can diff
+objects, fields, layouts, flows, permission sets, static resources, and more.
 
 ```sh
 sff diff MyClass                      # unified diff to stdout, exit 1 if differs
 sff diff force-app/.../lwc/myCmp      # bundle (directory diff)
 sff diff MyClass OtherClass lwc/myCmp # several targets at once
 sff diff classes/                     # a directory: recurses into all metadata
+sff diff force-app/main/default/objects/Account/fields/Foo__c.field-meta.xml
+sff diff force-app/main/default/objects/Account   # the whole object subtree
+sff diff MyClass --retrieve           # force the Metadata API path
 sff diff MyClass -o pr-dev
 ```
 
@@ -237,6 +242,14 @@ Each argument may be a file, an lwc/aura bundle, or a **directory** (walked
 recursively for all supported metadata). Multiple targets are diffed in
 sequence; a missing/failed target is reported but doesn't abort the rest, and
 the exit code is 1 if any target differs or fails.
+
+For **decomposed** metadata the diff mirrors IC2: pointing at a child file (a
+field, validation rule, list view, …) retrieves its parent type whole
+(`CustomObject`), converts it to the same decomposed source layout, and shows
+just that file's diff; pointing at the component directory diffs the whole
+subtree. The metadata type for non-decomposed paths is resolved from the org's
+describe catalog, so the Metadata API path needs an sfdx project. Use
+`--retrieve` to force the Metadata API path even for Apex/LWC/Aura.
 
 Viewer selection (for a GUI/terminal diff tool instead of stdout):
 

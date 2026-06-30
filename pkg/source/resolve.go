@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ko4edikov/sff/pkg/project"
 )
 
 // Kind distinguishes flat metadata from bundle metadata.
@@ -18,6 +20,7 @@ const (
 	Flat Kind = iota
 	LWC
 	Aura
+	Retrieve
 )
 
 // Target is a resolved piece of local metadata to compare against an org.
@@ -27,6 +30,13 @@ type Target struct {
 	LocalPath string // a file for Flat, a bundle directory for LWC/Aura
 	Object    string // Tooling object for Flat (e.g. "ApexClass")
 	Field     string // source field for Flat (e.g. "Body")
+
+	// Retrieve-kind fields: what to pull from the org via the Metadata API and
+	// how to narrow the comparison once it is converted back to source format.
+	RetrieveType   string           // Metadata API type to retrieve (e.g. "CustomObject")
+	RetrieveMember string           // member to retrieve (the parent for decomposed children)
+	ScopeRel       string           // source-relative file to diff; empty diffs the whole result
+	Project        *project.Project // project the local source lives in
 }
 
 // flatTypes maps a flat file extension to its Tooling object and source field.

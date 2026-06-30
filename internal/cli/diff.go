@@ -18,38 +18,48 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ko4edikov/sff/pkg/auth"
+	"github.com/ko4edikov/sff/pkg/mdapi"
 	"github.com/ko4edikov/sff/pkg/progress"
+	"github.com/ko4edikov/sff/pkg/project"
 	"github.com/ko4edikov/sff/pkg/sfapi"
 	"github.com/ko4edikov/sff/pkg/source"
 )
 
 func newDiffCmd() *cobra.Command {
 	var execTmpl, apiVersion string
+	var forceRetrieve bool
 	cmd := &cobra.Command{
 		Use:   "diff <file|name>...",
 		Short: "Diff local metadata against the org",
-		Long: "Fetch one or more components' source from the org (Tooling API) and compare\n" +
-			"with the local copy. Supports Apex (.cls/.trigger/.page/.component) and LWC/Aura\n" +
-			"bundles. A directory argument is walked recursively for all supported metadata.\n\n" +
+		Long: "Fetch one or more components' source from the org and compare with the local\n" +
+			"copy. Apex (.cls/.trigger/.page/.component) and LWC/Aura bundles use the fast\n" +
+			"Tooling API path; any other metadata is retrieved via the Metadata API and\n" +
+			"converted back to source format (decomposed children — fields, validation\n" +
+			"rules, etc. — diff at file granularity, like IC2). Use --retrieve to force the\n" +
+			"Metadata API path even for Apex/LWC/Aura. A directory argument that is an\n" +
+			"lwc/aura bundle or a decomposed component (e.g. objects/Account) is supported.\n\n" +
 			"Viewer: --exec '<tmpl>' takes precedence, then $SFF_DIFF; both use {remote}\n" +
 			"and {local} placeholders. With neither, a unified diff is printed to stdout\n" +
 			"and the exit code is 1 when any target differs.",
 		Example: `  sff diff MyClass
   sff diff MyClass OtherClass lwc/myCmp -o pr-dev
+  sff diff force-app/main/default/objects/Account/fields/Foo__c.field-meta.xml
+  sff diff force-app/main/default/objects/Account
   SFF_DIFF='idea diff {remote} {local}' sff diff MyClass
   sff diff MyClass --exec 'code --diff {remote} {local}'`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDiff(cmd.Context(), args, execTmpl, apiVersion)
+			return runDiff(cmd.Context(), args, execTmpl, apiVersion, forceRetrieve)
 		},
 	}
 	cmd.Flags().StringVar(&execTmpl, "exec", "", "diff viewer command template using {remote}/{local}")
-	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "Tooling API version")
+	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "API version")
+	cmd.Flags().BoolVar(&forceRetrieve, "retrieve", false, "force the Metadata API path for every target")
 	addTargetOrgFlag(cmd)
 	return cmd
 }
 
-func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string) error {
+func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string, forceRetrieve bool) error {
 	org, err := auth.Resolve(targetOrg)
 	if err != nil {
 		return err
@@ -62,14 +72,34 @@ func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string) er
 		viewer = os.Getenv("SFF_DIFF")
 	}
 
+	// Metadata API client, project and describe catalog are only needed for the
+	// retrieve path, so resolve them lazily on first use.
+	md := &retrieveDeps{org: org, apiVersion: apiVersion}
+
 	// Expand each arg (a file, a bundle, or a directory) into concrete targets.
 	var targets []*source.Target
 	failed := false
 	for _, arg := range args {
+		if forceRetrieve {
+			t, err := md.resolve(ctx, arg)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "sff: %s: %v\n", arg, err)
+				failed = true
+				continue
+			}
+			targets = append(targets, t)
+			continue
+		}
 		ts, err := source.ResolveAll(arg)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "sff: %s: %v\n", arg, err)
-			failed = true
+			// Not a Tooling-eligible target — fall back to the Metadata API path.
+			t, rerr := md.resolve(ctx, arg)
+			if rerr != nil {
+				fmt.Fprintf(os.Stderr, "sff: %s: %v\n", arg, err)
+				failed = true
+				continue
+			}
+			targets = append(targets, t)
 			continue
 		}
 		targets = append(targets, ts...)
@@ -81,7 +111,12 @@ func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string) er
 		if multi {
 			fmt.Fprintf(os.Stderr, "\n=== %s ===\n", t.Name)
 		}
-		differed, err := diffTarget(ctx, client, t, viewer)
+		var differed bool
+		if t.Kind == source.Retrieve {
+			differed, err = diffRetrieveTarget(ctx, md.client, md.catalog, t, viewer)
+		} else {
+			differed, err = diffTarget(ctx, client, t, viewer)
+		}
 		if err != nil {
 			// Report and continue so one bad target doesn't abort the batch.
 			fmt.Fprintf(os.Stderr, "sff: %s: %v\n", t.Name, err)
@@ -94,6 +129,73 @@ func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string) er
 		return &ExitError{Code: 1}
 	}
 	return nil
+}
+
+// retrieveDeps lazily holds the Metadata API client, project and describe
+// catalog shared across all retrieve-path targets in one diff run.
+type retrieveDeps struct {
+	org        *auth.Org
+	apiVersion string
+	client     *mdapi.Client
+	proj       *project.Project
+	catalog    *mdapi.DescribeResult
+}
+
+// resolve initializes the shared deps (once) and resolves arg into a Retrieve
+// target.
+func (d *retrieveDeps) resolve(ctx context.Context, arg string) (*source.Target, error) {
+	if d.client == nil {
+		d.client = newMDClient(d.org)
+		d.client.APIVersion = strings.TrimPrefix(d.apiVersion, "v")
+		proj, err := project.Find(".")
+		if err != nil {
+			return nil, fmt.Errorf("%w; the Metadata API diff path needs an sfdx project", err)
+		}
+		d.proj = proj
+		// A describe failure is fatal here: non-decomposed types are classified
+		// by the catalog, so without it we cannot map directories to types.
+		catalog, _, err := d.client.DescribeMetadataCached(ctx, false)
+		if err != nil {
+			return nil, fmt.Errorf("describe org metadata: %w", err)
+		}
+		d.catalog = catalog
+	}
+	return source.ResolveRetrieve(arg, d.proj, d.catalog)
+}
+
+// diffRetrieveTarget retrieves a target via the Metadata API, converts it back
+// to source format, and diffs each resulting file against its local counterpart.
+func diffRetrieveTarget(ctx context.Context, c *mdapi.Client, catalog *mdapi.DescribeResult, t *source.Target, viewer string) (bool, error) {
+	prog := progress.Start(fmt.Sprintf("retrieving %s from org", t.Name))
+	files, cleanup, err := source.FetchRetrieve(ctx, c, catalog, t)
+	prog.Stop()
+	if err != nil {
+		return false, err
+	}
+	defer cleanup()
+	fmt.Fprintf(os.Stderr, "✓ %d file(s) — diffing…\n", len(files))
+
+	if viewer != "" {
+		for _, f := range files {
+			if err := runViewer(ctx, viewer, f.RemotePath, f.LocalPath); err != nil {
+				return false, err
+			}
+		}
+		return false, nil
+	}
+
+	differed := false
+	for _, f := range files {
+		d, err := diffFiles(f.RemotePath, f.LocalPath)
+		if err != nil {
+			return differed, err
+		}
+		differed = differed || d
+	}
+	if !differed {
+		fmt.Fprintf(os.Stderr, "✓ %s: no differences\n", t.Name)
+	}
+	return differed, nil
 }
 
 // diffTarget fetches and diffs a single resolved target, returning whether it
