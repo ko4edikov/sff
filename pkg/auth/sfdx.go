@@ -29,14 +29,6 @@ func sfdxDir() (string, error) {
 	return filepath.Join(home, ".sfdx"), nil
 }
 
-func sfDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("locate home dir: %w", err)
-	}
-	return filepath.Join(home, ".sf"), nil
-}
-
 // loadAuthFile reads and parses ~/.sfdx/<username>.json.
 func loadAuthFile(username string) (*authFile, error) {
 	dir, err := sfdxDir()
@@ -118,22 +110,66 @@ func aliasFor(aliases map[string]string, username string) string {
 	return ""
 }
 
-// defaultTarget reads the configured default org from ~/.sf/config.json
-// (target-org), falling back to ~/.sfdx/sfdx-config.json (defaultusername).
+// defaultTarget reads the configured default org, mirroring the Salesforce CLI's
+// precedence: a project-local config (the nearest .sf/config.json or legacy
+// .sfdx/sfdx-config.json found by walking up from the current directory) wins
+// over the global config in the home directory. At each level target-org is
+// preferred over the legacy defaultusername.
 func defaultTarget() (string, error) {
-	if v, err := readConfigKey(sfDir, "config.json", "target-org"); err != nil {
-		return "", err
-	} else if v != "" {
-		return v, nil
+	type source struct {
+		dir      string
+		file     string
+		key      string
+		explicit bool // dir was located (an empty dir means "not present")
 	}
-	return readConfigKey(sfdxDir, "sfdx-config.json", "defaultusername")
+	localSf, okSf := findConfigDir(".sf")
+	localSfdx, okSfdx := findConfigDir(".sfdx")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("locate home dir: %w", err)
+	}
+	for _, s := range []source{
+		{localSf, "config.json", "target-org", okSf},
+		{localSfdx, "sfdx-config.json", "defaultusername", okSfdx},
+		{filepath.Join(home, ".sf"), "config.json", "target-org", true},
+		{filepath.Join(home, ".sfdx"), "sfdx-config.json", "defaultusername", true},
+	} {
+		if !s.explicit {
+			continue
+		}
+		v, err := readConfigKey(s.dir, s.file, s.key)
+		if err != nil {
+			return "", err
+		}
+		if v != "" {
+			return v, nil
+		}
+	}
+	return "", nil
 }
 
-func readConfigKey(dirFn func() (string, error), file, key string) (string, error) {
-	dir, err := dirFn()
+// findConfigDir walks up from the current directory looking for a child
+// directory named name (".sf" or ".sfdx"), returning its path and whether one
+// was found. This locates a project-local Salesforce config.
+func findConfigDir(name string) (string, bool) {
+	dir, err := os.Getwd()
 	if err != nil {
-		return "", err
+		return "", false
 	}
+	for {
+		cand := filepath.Join(dir, name)
+		if fi, err := os.Stat(cand); err == nil && fi.IsDir() {
+			return cand, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+func readConfigKey(dir, file, key string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(dir, file))
 	if err != nil {
 		if os.IsNotExist(err) {
