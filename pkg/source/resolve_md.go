@@ -14,9 +14,11 @@ import (
 // ResolveRetrieve builds a Retrieve target from a local source path, deciding
 // what to pull from the org via the Metadata API and how to narrow the diff.
 //
-// A single file resolves to one component (a decomposed child like a custom
-// field maps to its parent type retrieved whole, e.g. CustomObject). A directory
-// is walked and every component beneath it is collected into one bulk retrieve —
+// A single file resolves to the narrowest component that contains it: a
+// decomposed child (a field, validation rule, …) maps to its own child type and
+// "Parent.Child" member, so diffing one field retrieves just that field rather
+// than the whole CustomObject. A directory is walked and every component beneath
+// it is collected into one bulk retrieve —
 // so a single component dir (objects/Account), a whole type dir (objects/,
 // layouts/), or any broader directory (force-app/main/default) all work. ScopeRel
 // narrows the comparison back down to what was pointed at.
@@ -31,7 +33,7 @@ func ResolveRetrieve(path string, proj *project.Project, catalog *mdapi.Describe
 	isDir := statErr == nil && fi.IsDir()
 
 	if !isDir {
-		spec, ok := relToSpec(rel, byDir)
+		spec, ok := relToNarrowSpec(rel, byDir)
 		if !ok {
 			return nil, fmt.Errorf("%s: unsupported metadata file", path)
 		}
@@ -69,11 +71,48 @@ func ResolveRetrieve(path string, proj *project.Project, catalog *mdapi.Describe
 	}, nil
 }
 
+// relToNarrowSpec maps a single source file to the narrowest Metadata API
+// "Type:Member" specifier that still contains it. A decomposed child laid out
+// folder-per-type (objects/Account/fields/X__c.field-meta.xml) resolves to its
+// own child type and "Parent.Child" member (CustomField:Account.X__c), so
+// diffing one field retrieves just that field instead of the whole CustomObject.
+// Everything else — a residual parent file, a top-level-layout child, or a
+// non-decomposed file — falls back to relToSpec.
+func relToNarrowSpec(rel string, byDir map[string]mdapi.MetadataObject) (string, bool) {
+	if spec, ok := childSpec(rel); ok {
+		return spec, true
+	}
+	return relToSpec(rel, byDir)
+}
+
+// childSpec returns the "ChildType:Parent.Child" specifier for a decomposed
+// child file in a folder-per-type object (objects/Account/fields/X__c.field-meta.xml
+// → CustomField:Account.X__c). ok is false for any other path, including the
+// residual parent file and top-level-layout children.
+func childSpec(rel string) (string, bool) {
+	parts := strings.Split(rel, "/")
+	if len(parts) != 4 { // [dir, parent, childFolder, file]
+		return "", false
+	}
+	t := decompByDir[parts[0]]
+	if t == nil || t.Layout != "folderPerType" {
+		return "", false
+	}
+	child, ok := t.childByTag(parts[2]) // the subfolder name is the child's xmlTag
+	if !ok {
+		return "", false
+	}
+	name := memberFromFile(parts[3], child.Suffix)
+	return child.Type + ":" + parts[1] + "." + name, true
+}
+
 // relToSpec maps a source-relative file path to a Metadata API "Type:Member"
 // specifier. A decomposed child (objects/Account/fields/X__c.field-meta.xml)
 // maps to its parent component (CustomObject:Account); a non-decomposed file
 // maps to its own type via the describe catalog. ok is false for paths that
-// don't correspond to a metadata component.
+// don't correspond to a metadata component. Used for directory walks, where
+// children dedupe up to one whole-parent retrieve; see relToNarrowSpec for the
+// single-file path.
 func relToSpec(rel string, byDir map[string]mdapi.MetadataObject) (string, bool) {
 	parts := strings.Split(rel, "/")
 	if len(parts) < 2 {

@@ -59,6 +59,13 @@ func FetchRetrieve(ctx context.Context, c *mdapi.Client, catalog *mdapi.Describe
 	}
 	res, err := c.RetrieveAndWait(ctx, pkg, nil)
 	if err != nil {
+		// A narrow single-file retrieve whose named member does not exist in the
+		// org is not a failure: the component is local-only. Diff it against an
+		// empty remote so the local content shows entirely as added, rather than
+		// surfacing the Metadata API's "cannot be found" as an error.
+		if rel, ok := localOnlyScope(t, res); ok {
+			return localOnly(t, rel)
+		}
 		return nil, "", err
 	}
 
@@ -77,6 +84,13 @@ func FetchRetrieve(ctx context.Context, c *mdapi.Client, catalog *mdapi.Describe
 		return nil, "", err
 	}
 	if len(conv.Written) == 0 {
+		// A narrow single-file retrieve that yields nothing means the component is
+		// local-only (the org returns success with a "cannot be found" warning, not
+		// a hard failure). Diff it against an empty remote so the local content
+		// shows entirely as added rather than erroring.
+		if rel, ok := narrowScope(t); ok {
+			return localOnly(t, rel)
+		}
 		detail := strings.Join(res.Messages, "; ")
 		if detail == "" {
 			detail = "not found in org"
@@ -96,6 +110,56 @@ func FetchRetrieve(ctx context.Context, c *mdapi.Client, catalog *mdapi.Describe
 		})
 	}
 	return files, CommonDir(remotePaths), nil
+}
+
+// narrowScope reports whether t is a narrow single-file retrieve — one
+// Type:Member spec (not a wildcard) whose scoped local path is an existing
+// regular file — returning that scoped path. It gates treating an empty retrieve
+// as local-only, so a missing whole-object or directory retrieve still surfaces
+// as a real error rather than being silently swallowed.
+func narrowScope(t *Target) (string, bool) {
+	if t.ScopeRel == "" || len(t.RetrieveSpecs) != 1 {
+		return "", false
+	}
+	spec := t.RetrieveSpecs[0]
+	i := strings.Index(spec, ":")
+	if i < 0 || spec[i+1:] == "*" {
+		return "", false
+	}
+	if fi, err := os.Stat(placeInProject(t.Project, t.ScopeRel)); err != nil || fi.IsDir() {
+		return "", false
+	}
+	return t.ScopeRel, true
+}
+
+// localOnlyScope reports whether a failed retrieve is the benign "this single
+// named component does not exist in the org" case (every org message a "cannot
+// be found" entity error), returning the scoped source path to diff.
+func localOnlyScope(t *Target, res *mdapi.RetrieveResult) (string, bool) {
+	if res == nil || res.Success || len(res.Messages) == 0 {
+		return "", false
+	}
+	for _, m := range res.Messages {
+		if !strings.Contains(m, "cannot be found") {
+			return "", false
+		}
+	}
+	return narrowScope(t)
+}
+
+// localOnly synthesizes the diff pair for a scoped file absent from the org: an
+// empty remote written under the temp dir, paired with the local file, so the
+// local content diffs as wholly added.
+func localOnly(t *Target, rel string) ([]RetrievedFile, string, error) {
+	remote := filepath.Join(os.TempDir(), "sff-diff-org", sanitizePathSeg(rel), filepath.FromSlash(rel))
+	if err := writeFile(remote, nil); err != nil {
+		return nil, "", err
+	}
+	return []RetrievedFile{{
+		Rel:        rel,
+		RemotePath: remote,
+		LocalPath:  placeInProject(t.Project, rel),
+	}}, "", nil
 }
 
 // CommonDir returns the deepest directory that contains all of paths, used as a

@@ -45,9 +45,9 @@ func TestResolveRetrieve(t *testing.T) {
 		wantScope string
 	}{
 		{
-			name:      "decomposed child field",
+			name:      "decomposed child field narrows to the field member",
 			path:      filepath.Join(base, "objects/Account/fields/Foo__c.field-meta.xml"),
-			wantSpecs: []string{"CustomObject:Account"},
+			wantSpecs: []string{"CustomField:Account.Foo__c"},
 			wantScope: "objects/Account/fields/Foo__c.field-meta.xml",
 		},
 		{
