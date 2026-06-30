@@ -234,14 +234,19 @@ sff diff MyClass OtherClass lwc/myCmp # several targets at once
 sff diff classes/                     # a directory: recurses into all metadata
 sff diff force-app/main/default/objects/Account/fields/Foo__c.field-meta.xml
 sff diff force-app/main/default/objects/Account   # the whole object subtree
+sff diff force-app/main/default/objects            # every object, one retrieve
+sff diff force-app/main/default                     # the whole project
 sff diff MyClass --retrieve           # force the Metadata API path
 sff diff MyClass -o pr-dev
 ```
 
-Each argument may be a file, an lwc/aura bundle, or a **directory** (walked
-recursively for all supported metadata). Multiple targets are diffed in
-sequence; a missing/failed target is reported but doesn't abort the rest, and
-the exit code is 1 if any target differs or fails.
+Each argument may be a file, an lwc/aura bundle, or a **directory**. A directory
+on the Metadata API path is walked and every component beneath it is collected
+into a **single retrieve** — a single component (`objects/Account`), a whole type
+folder (`objects/`, `layouts/`), or any broader directory (`force-app/main/default`)
+all work. Multiple targets are diffed in sequence; a missing/failed target is
+reported but doesn't abort the rest, and the exit code is 1 if any target differs
+or fails.
 
 For **decomposed** metadata the diff mirrors IC2: pointing at a child file (a
 field, validation rule, list view, …) retrieves its parent type whole
@@ -259,6 +264,10 @@ sff diff MyClass                               # opens the configured viewer
 sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
 ```
 
+- `--ignore` controls whitespace handling in the **built-in** diff (an external
+  viewer uses its own setting): `none` (default), `trim` (leading/trailing
+  whitespace), `whitespace` (all whitespace), `whitespace-blank` (whitespace and
+  blank lines). Lines are matched on the normalized form but displayed verbatim.
 - Resolution order: `--exec` → `$SFF_DIFF` → built-in unified diff.
 - `{remote}` is a temp file (flat) or directory (bundle); `{local}` is the
   working copy. Org content is normalized (CRLF→LF, trailing whitespace, final

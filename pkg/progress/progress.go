@@ -5,8 +5,9 @@
 //
 // The spinner animates only when its writer is a TTY, so redirected or piped
 // output is never polluted with control characters. On a non-TTY (a server, a
-// captured pipe, a test) it is an inert no-op, so callers can use it
-// unconditionally.
+// captured pipe, the IntelliJ external-tool console) it degrades to periodic
+// plain-text "<msg> (<elapsed>s)" lines so long operations still show progress,
+// and callers can use it unconditionally.
 package progress
 
 import (
@@ -36,35 +37,53 @@ type Progress struct {
 // Call Update to change the message as work advances (e.g. a deploy status or
 // poll count) and Stop exactly once when the operation finishes.
 func Start(msg string) *Progress {
-	return StartOn(os.Stderr, msg)
+	return startOn(os.Stderr, time.Now(), msg)
+}
+
+// StartAt is like Start but anchors the elapsed counter to an earlier instant,
+// so a sequence of spinners (one per step) shows time accumulating from the
+// start of an overall operation rather than resetting on each step.
+func StartAt(start time.Time, msg string) *Progress {
+	return startOn(os.Stderr, start, msg)
 }
 
 // StartOn is like Start but writes to w, letting a library consumer target its
-// own terminal. When w is not a TTY the returned Progress is inert.
+// own terminal. On a TTY it animates a spinner; on a non-TTY (a pipe, CI, or the
+// IntelliJ external-tool console) it falls back to periodic plain-text progress
+// lines so long operations still show liveness and elapsed time.
 func StartOn(w io.Writer, msg string) *Progress {
-	p := &Progress{w: w, start: time.Now(), msg: msg}
+	return startOn(w, time.Now(), msg)
+}
+
+// heartbeat is how often the non-TTY fallback prints an elapsed-time line.
+const heartbeat = 5 * time.Second
+
+func startOn(w io.Writer, start time.Time, msg string) *Progress {
+	p := &Progress{w: w, start: start, msg: msg}
+	p.stopCh = make(chan struct{})
+	p.doneCh = make(chan struct{})
 	if !isTerminal(w) {
-		return p // inert: Update/Stop do nothing
+		fmt.Fprintf(w, "%s…\n", msg) // immediate feedback, then heartbeats
+		go p.beat()
+		return p
 	}
 	p.sp = spinner.New(spinner.CharSets[11], 100*time.Millisecond,
 		spinner.WithWriter(w), spinner.WithHiddenCursor(true))
 	p.render()
 	p.sp.Start()
-	p.stopCh = make(chan struct{})
-	p.doneCh = make(chan struct{})
 	go p.tick() // refresh the elapsed counter even when the message is static
 	return p
 }
 
-// Update replaces the message shown next to the spinner.
+// Update replaces the message shown next to the spinner (or, on a non-TTY,
+// recorded for the next heartbeat line).
 func (p *Progress) Update(msg string) {
-	if p.sp == nil {
-		return
-	}
 	p.mu.Lock()
 	p.msg = msg
 	p.mu.Unlock()
-	p.render()
+	if p.sp != nil {
+		p.render()
+	}
 }
 
 // render writes "<msg> (<elapsed>s)" into the spinner suffix under the
@@ -93,17 +112,36 @@ func (p *Progress) tick() {
 	}
 }
 
-// Stop halts the animation and clears the spinner line. It is safe to call once
-// from any goroutine; further calls are no-ops.
+// beat is the non-TTY counterpart of tick: it prints a plain "<msg> (<elapsed>s)"
+// line every heartbeat interval so piped/console output shows ongoing progress.
+func (p *Progress) beat() {
+	defer close(p.doneCh)
+	t := time.NewTicker(heartbeat)
+	defer t.Stop()
+	for {
+		select {
+		case <-p.stopCh:
+			return
+		case <-t.C:
+			p.mu.Lock()
+			msg := p.msg
+			p.mu.Unlock()
+			fmt.Fprintf(p.w, "%s (%.0fs)\n", msg, time.Since(p.start).Seconds())
+		}
+	}
+}
+
+// Stop halts the animation (clearing the spinner line on a TTY) or the heartbeat
+// loop on a non-TTY. It is safe to call once from any goroutine; further calls
+// are no-ops.
 func (p *Progress) Stop() {
 	p.once.Do(func() {
-		if p.sp == nil {
-			return
-		}
 		close(p.stopCh)
 		<-p.doneCh
-		p.sp.Stop()
-		fmt.Fprint(p.w, "\r\033[K") // clear the spinner's last line
+		if p.sp != nil {
+			p.sp.Stop()
+			fmt.Fprint(p.w, "\r\033[K") // clear the spinner's last line
+		}
 	})
 }
 

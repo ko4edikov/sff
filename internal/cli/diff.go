@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/pmezard/go-difflib/difflib"
 	"github.com/spf13/cobra"
@@ -26,7 +27,7 @@ import (
 )
 
 func newDiffCmd() *cobra.Command {
-	var execTmpl, apiVersion string
+	var execTmpl, apiVersion, ignore string
 	var forceRetrieve bool
 	cmd := &cobra.Command{
 		Use:   "diff <file|name>...",
@@ -36,8 +37,10 @@ func newDiffCmd() *cobra.Command {
 			"Tooling API path; any other metadata is retrieved via the Metadata API and\n" +
 			"converted back to source format (decomposed children — fields, validation\n" +
 			"rules, etc. — diff at file granularity, like IC2). Use --retrieve to force the\n" +
-			"Metadata API path even for Apex/LWC/Aura. A directory argument that is an\n" +
-			"lwc/aura bundle or a decomposed component (e.g. objects/Account) is supported.\n\n" +
+			"Metadata API path even for Apex/LWC/Aura. A directory argument is walked and\n" +
+			"every component under it is diffed in one retrieve — a single component\n" +
+			"(objects/Account), a whole type folder (objects/, layouts/), or any broader\n" +
+			"directory (force-app/main/default).\n\n" +
 			"Viewer: --exec '<tmpl>' takes precedence, then $SFF_DIFF; both use {remote}\n" +
 			"and {local} placeholders. With neither, a unified diff is printed to stdout\n" +
 			"and the exit code is 1 when any target differs.",
@@ -49,17 +52,23 @@ func newDiffCmd() *cobra.Command {
   sff diff MyClass --exec 'code --diff {remote} {local}'`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDiff(cmd.Context(), args, execTmpl, apiVersion, forceRetrieve)
+			return runDiff(cmd.Context(), args, execTmpl, apiVersion, forceRetrieve, ignore)
 		},
 	}
 	cmd.Flags().StringVar(&execTmpl, "exec", "", "diff viewer command template using {remote}/{local}")
 	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "API version")
 	cmd.Flags().BoolVar(&forceRetrieve, "retrieve", false, "force the Metadata API path for every target")
+	cmd.Flags().StringVar(&ignore, "ignore", "none", "built-in diff whitespace handling: none, trim, whitespace, whitespace-blank")
 	addTargetOrgFlag(cmd)
 	return cmd
 }
 
-func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string, forceRetrieve bool) error {
+func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string, forceRetrieve bool, ignoreFlag string) error {
+	start := time.Now()
+	ignore, err := parseIgnore(ignoreFlag)
+	if err != nil {
+		return err
+	}
 	org, err := auth.Resolve(targetOrg)
 	if err != nil {
 		return err
@@ -95,14 +104,45 @@ func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string, fo
 			// Not a Tooling-eligible target — fall back to the Metadata API path.
 			t, rerr := md.resolve(ctx, arg)
 			if rerr != nil {
-				fmt.Fprintf(os.Stderr, "sff: %s: %v\n", arg, err)
+				// For a real path the retrieve error is the relevant one; for a
+				// bare name the Tooling "not found in project" error is clearer.
+				reported := err
+				if _, statErr := os.Stat(arg); statErr == nil {
+					reported = rerr
+				}
+				fmt.Fprintf(os.Stderr, "sff: %s: %v\n", arg, reported)
 				failed = true
 				continue
 			}
 			targets = append(targets, t)
 			continue
 		}
+		// A directory that expands to many components is far faster to diff in one
+		// bulk Metadata API retrieve than as one Tooling query per component, so
+		// switch to the retrieve path; fall back to the Tooling targets if its
+		// resolution fails. A single file/bundle stays on the fast Tooling path.
+		if len(ts) > 1 {
+			if t, rerr := md.resolve(ctx, arg); rerr == nil {
+				targets = append(targets, t)
+				continue
+			}
+		}
 		targets = append(targets, ts...)
+	}
+
+	// With an external viewer and many targets, open a single directory diff so a
+	// folder or list of components shows one unified tree — not one window per
+	// file (which can overwhelm the editor).
+	if viewer != "" && len(targets) > 1 {
+		failedFetch, err := runViewerBatch(ctx, start, viewer, targets, client, md)
+		fmt.Fprintf(os.Stderr, "done in %s\n", fmtDuration(time.Since(start)))
+		if err != nil {
+			return err
+		}
+		if failed || failedFetch {
+			return &ExitError{Code: 1}
+		}
+		return nil
 	}
 
 	multi := len(targets) > 1
@@ -113,9 +153,9 @@ func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string, fo
 		}
 		var differed bool
 		if t.Kind == source.Retrieve {
-			differed, err = diffRetrieveTarget(ctx, md.client, md.catalog, t, viewer)
+			differed, err = diffRetrieveTarget(ctx, start, md.client, md.catalog, t, viewer, ignore)
 		} else {
-			differed, err = diffTarget(ctx, client, t, viewer)
+			differed, err = diffTarget(ctx, start, client, t, viewer, ignore)
 		}
 		if err != nil {
 			// Report and continue so one bad target doesn't abort the batch.
@@ -125,6 +165,7 @@ func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string, fo
 		}
 		anyDiff = anyDiff || differed
 	}
+	fmt.Fprintf(os.Stderr, "done in %s\n", fmtDuration(time.Since(start)))
 	if failed || anyDiff {
 		return &ExitError{Code: 1}
 	}
@@ -165,28 +206,28 @@ func (d *retrieveDeps) resolve(ctx context.Context, arg string) (*source.Target,
 
 // diffRetrieveTarget retrieves a target via the Metadata API, converts it back
 // to source format, and diffs each resulting file against its local counterpart.
-func diffRetrieveTarget(ctx context.Context, c *mdapi.Client, catalog *mdapi.DescribeResult, t *source.Target, viewer string) (bool, error) {
-	prog := progress.Start(fmt.Sprintf("retrieving %s from org", t.Name))
-	files, cleanup, err := source.FetchRetrieve(ctx, c, catalog, t)
+func diffRetrieveTarget(ctx context.Context, start time.Time, c *mdapi.Client, catalog *mdapi.DescribeResult, t *source.Target, viewer string, ignore ignoreMode) (bool, error) {
+	prog := progress.StartAt(start, fmt.Sprintf("retrieving %s from org", t.Name))
+	files, remoteDir, err := source.FetchRetrieve(ctx, c, catalog, t)
 	prog.Stop()
 	if err != nil {
 		return false, err
 	}
-	defer cleanup()
 	fmt.Fprintf(os.Stderr, "✓ %d file(s) — diffing…\n", len(files))
 
 	if viewer != "" {
-		for _, f := range files {
-			if err := runViewer(ctx, viewer, f.RemotePath, f.LocalPath); err != nil {
-				return false, err
-			}
+		// A single file diffs file-to-file; a multi-file component diffs the temp
+		// directory against the local one, so the viewer handles files present on
+		// only one side (e.g. a residual .object-meta.xml absent locally).
+		if len(files) == 1 {
+			return false, runViewer(ctx, viewer, files[0].RemotePath, files[0].LocalPath)
 		}
-		return false, nil
+		return false, runViewer(ctx, viewer, remoteDir, t.LocalPath)
 	}
 
 	differed := false
 	for _, f := range files {
-		d, err := diffFiles(f.RemotePath, f.LocalPath)
+		d, err := diffFiles(f.RemotePath, f.LocalPath, ignore)
 		if err != nil {
 			return differed, err
 		}
@@ -198,11 +239,89 @@ func diffRetrieveTarget(ctx context.Context, c *mdapi.Client, catalog *mdapi.Des
 	return differed, nil
 }
 
+// runViewerBatch fetches every target's org source into a single temp directory
+// that mirrors the local layout, then opens one directory diff in the external
+// viewer. This keeps a folder or list of many components to a single window
+// instead of one per file. It returns whether any target failed to fetch.
+func runViewerBatch(ctx context.Context, start time.Time, viewer string, targets []*source.Target, client *sfapi.Client, md *retrieveDeps) (bool, error) {
+	type pair struct {
+		content []byte
+		local   string
+	}
+	var pairs []pair
+	failed := false
+	prog := progress.StartAt(start, fmt.Sprintf("fetching %d target(s) from org", len(targets)))
+	for _, t := range targets {
+		if t.Kind == source.Retrieve {
+			files, _, err := source.FetchRetrieve(ctx, md.client, md.catalog, t)
+			if err != nil {
+				prog.Stop()
+				fmt.Fprintf(os.Stderr, "sff: %s: %v\n", t.Name, err)
+				failed = true
+				prog = progress.StartAt(start, "fetching")
+				continue
+			}
+			for _, f := range files {
+				if c, err := os.ReadFile(f.RemotePath); err == nil {
+					pairs = append(pairs, pair{c, f.LocalPath})
+				}
+			}
+			continue
+		}
+		files, err := source.Fetch(ctx, client, t)
+		if err != nil {
+			prog.Stop()
+			fmt.Fprintf(os.Stderr, "sff: %s: %v\n", t.Name, err)
+			failed = true
+			prog = progress.StartAt(start, "fetching")
+			continue
+		}
+		if t.Kind == source.Flat {
+			local, _ := os.ReadFile(t.LocalPath)
+			pairs = append(pairs, pair{source.Normalize(files[0].Content, local), t.LocalPath})
+		} else {
+			for _, f := range files {
+				lp := filepath.Join(t.LocalPath, f.Rel)
+				local, _ := os.ReadFile(lp)
+				pairs = append(pairs, pair{source.Normalize(f.Content, local), lp})
+			}
+		}
+	}
+	prog.Stop()
+	if len(pairs) == 0 {
+		return failed, nil
+	}
+
+	locals := make([]string, len(pairs))
+	for i, p := range pairs {
+		locals[i] = p.local
+	}
+	base := source.CommonDir(locals)
+	mirror := filepath.Join(os.TempDir(), "sff-diff", "batch")
+	if err := os.RemoveAll(mirror); err != nil {
+		return failed, err
+	}
+	for _, p := range pairs {
+		rel, err := filepath.Rel(base, p.local)
+		if err != nil {
+			continue
+		}
+		if err := writeFile(filepath.Join(mirror, rel), p.content); err != nil {
+			return failed, err
+		}
+	}
+	fmt.Fprintf(os.Stderr, "✓ %d file(s) — opening viewer\n", len(pairs))
+	if err := runViewer(ctx, viewer, mirror, base); err != nil {
+		return failed, err
+	}
+	return failed, nil
+}
+
 // diffTarget fetches and diffs a single resolved target, returning whether it
 // differs (only meaningful for the built-in unified-diff fallback; viewer mode
 // reports false).
-func diffTarget(ctx context.Context, client *sfapi.Client, t *source.Target, viewer string) (bool, error) {
-	prog := progress.Start(fmt.Sprintf("querying %s from org", t.Name))
+func diffTarget(ctx context.Context, start time.Time, client *sfapi.Client, t *source.Target, viewer string, ignore ignoreMode) (bool, error) {
+	prog := progress.StartAt(start, fmt.Sprintf("querying %s from org", t.Name))
 	files, err := source.Fetch(ctx, client, t)
 	prog.Stop()
 	if err != nil {
@@ -217,7 +336,7 @@ func diffTarget(ctx context.Context, client *sfapi.Client, t *source.Target, vie
 	if viewer != "" {
 		return false, runViewer(ctx, viewer, remotePath, t.LocalPath)
 	}
-	differed, err := runUnifiedDiff(remotePath, t.LocalPath, t.Kind != source.Flat)
+	differed, err := runUnifiedDiff(remotePath, t.LocalPath, t.Kind != source.Flat, ignore)
 	if err == nil && !differed {
 		fmt.Fprintf(os.Stderr, "✓ %s: no differences\n", t.Name)
 	}
@@ -286,16 +405,16 @@ func runViewer(ctx context.Context, tmpl, remote, local string) error {
 // binary, so it behaves identically on every OS), prints it colorized, and
 // reports whether the contents differ. recursive diffs a bundle directory pair;
 // otherwise it diffs two files.
-func runUnifiedDiff(remote, local string, recursive bool) (bool, error) {
+func runUnifiedDiff(remote, local string, recursive bool, ignore ignoreMode) (bool, error) {
 	if recursive {
-		return diffTrees(remote, local)
+		return diffTrees(remote, local, ignore)
 	}
-	return diffFiles(remote, local)
+	return diffFiles(remote, local, ignore)
 }
 
 // diffFiles writes a unified diff of two files (a missing side is treated as
-// empty) and reports whether they differ.
-func diffFiles(remote, local string) (bool, error) {
+// empty) and reports whether they differ. ignore controls whitespace handling.
+func diffFiles(remote, local string, ignore ignoreMode) (bool, error) {
 	rb, err := readOrEmpty(remote)
 	if err != nil {
 		return false, err
@@ -304,18 +423,9 @@ func diffFiles(remote, local string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	text, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
-		A:        toLines(rb),
-		B:        toLines(lb),
-		FromFile: remote,
-		FromDate: modTime(remote),
-		ToFile:   local,
-		ToDate:   modTime(local),
-		Context:  3,
-	})
-	if err != nil {
-		return false, fmt.Errorf("diff %s: %w", local, err)
-	}
+	aOrig, aKey := prepLines(toLines(rb), ignore)
+	bOrig, bKey := prepLines(toLines(lb), ignore)
+	text := unifiedDiff(aOrig, bOrig, aKey, bKey, remote, modTime(remote), local, modTime(local), 3)
 	if text == "" {
 		return false, nil
 	}
@@ -326,7 +436,7 @@ func diffFiles(remote, local string) (bool, error) {
 // diffTrees diffs every file under two bundle directories (paired by relative
 // path; a file present on only one side diffs against an empty counterpart) and
 // reports whether anything differs.
-func diffTrees(remote, local string) (bool, error) {
+func diffTrees(remote, local string, ignore ignoreMode) (bool, error) {
 	rels := map[string]bool{}
 	for _, root := range []string{remote, local} {
 		_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -349,7 +459,7 @@ func diffTrees(remote, local string) (bool, error) {
 	differed := false
 	for _, rel := range ordered {
 		fp := filepath.FromSlash(rel)
-		d, err := diffFiles(filepath.Join(remote, fp), filepath.Join(local, fp))
+		d, err := diffFiles(filepath.Join(remote, fp), filepath.Join(local, fp), ignore)
 		if err != nil {
 			return differed, err
 		}

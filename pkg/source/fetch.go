@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ko4edikov/sff/pkg/mdapi"
@@ -43,65 +44,103 @@ type RetrievedFile struct {
 
 // FetchRetrieve pulls a Retrieve target from the org via the Metadata API,
 // converts the result back to source format (decomposing it the same way the
-// local project is laid out), and returns the per-file diff pairs. The returned
-// cleanup function removes the temp dir holding the org-side source and must be
-// called once the caller has finished diffing. files is nil when the org returns
-// nothing for the requested component.
-func FetchRetrieve(ctx context.Context, c *mdapi.Client, catalog *mdapi.DescribeResult, t *Target) (files []RetrievedFile, cleanup func(), err error) {
-	pkg, err := mdapi.ParseSpecifiers([]string{t.RetrieveType + ":" + t.RetrieveMember}, c.APIVersion)
+// local project is laid out), and returns the per-file diff pairs. files is nil
+// when the org returns nothing for the requested component.
+//
+// The org-side source is materialized under a stable temp dir keyed by the
+// component (cleared and rewritten each run). It is deliberately not deleted
+// afterward: an external viewer (e.g. `idea diff`) often returns immediately and
+// opens the files asynchronously, so they must outlive this process — mirroring
+// the Tooling diff path, which also leaves its temp files in place.
+func FetchRetrieve(ctx context.Context, c *mdapi.Client, catalog *mdapi.DescribeResult, t *Target) (files []RetrievedFile, remoteDir string, err error) {
+	pkg, err := mdapi.ParseSpecifiers(t.RetrieveSpecs, c.APIVersion)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", err
 	}
 	res, err := c.RetrieveAndWait(ctx, pkg, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", err
 	}
 
-	tmpRoot, err := os.MkdirTemp("", "sff-diff-org-")
-	if err != nil {
-		return nil, nil, err
+	key := t.ScopeRel
+	if key == "" {
+		key = "all"
 	}
-	cleanup = func() { _ = os.RemoveAll(tmpRoot) }
+	tmpRoot := filepath.Join(os.TempDir(), "sff-diff-org", sanitizePathSeg(key))
+	if err := os.RemoveAll(tmpRoot); err != nil {
+		return nil, "", err
+	}
 	tmpProj := &project.Project{Root: tmpRoot, Dirs: []project.Dir{{Path: "force-app", Default: true}}}
 
 	conv, err := ConvertZipToSource(res.ZipFile, tmpProj, catalog)
 	if err != nil {
-		cleanup()
-		return nil, nil, err
+		return nil, "", err
 	}
 	if len(conv.Written) == 0 {
-		cleanup()
 		detail := strings.Join(res.Messages, "; ")
 		if detail == "" {
 			detail = "not found in org"
 		}
-		return nil, nil, fmt.Errorf("%s: %s", t.Name, detail)
+		return nil, "", fmt.Errorf("%s: %s", t.Name, detail)
 	}
 
 	written := filterScope(conv.Written, t.ScopeRel)
+	remotePaths := make([]string, 0, len(written))
 	for _, rel := range written {
+		remote := placeInProject(tmpProj, rel)
+		remotePaths = append(remotePaths, remote)
 		files = append(files, RetrievedFile{
 			Rel:        rel,
-			RemotePath: placeInProject(tmpProj, rel),
+			RemotePath: remote,
 			LocalPath:  placeInProject(t.Project, rel),
 		})
 	}
-	return files, cleanup, nil
+	return files, CommonDir(remotePaths), nil
 }
 
-// filterScope narrows written to just scope when it is set and present; if scope
-// is empty or matches nothing (e.g. a static resource whose content file name
+// CommonDir returns the deepest directory that contains all of paths, used as a
+// root for a directory-level (viewer) diff of a multi-file component or batch.
+func CommonDir(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	dir := filepath.Dir(paths[0])
+	for _, p := range paths[1:] {
+		for dir != filepath.Dir(dir) {
+			if rel, err := filepath.Rel(dir, p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				break
+			}
+			dir = filepath.Dir(dir)
+		}
+	}
+	return dir
+}
+
+// sanitizePathSeg makes s safe to use as a single path segment by replacing
+// path separators (member names may contain them, e.g. folder/Report).
+func sanitizePathSeg(s string) string {
+	return strings.NewReplacer("/", "_", "\\", "_").Replace(s)
+}
+
+// filterScope narrows written to scope: an exact file match, or every file
+// under scope when it names a directory (matched as a path prefix). If scope is
+// empty, or matches nothing (e.g. a static resource whose content file name
 // shifts during conversion), the full set is returned.
 func filterScope(written []string, scope string) []string {
 	if scope == "" {
 		return written
 	}
+	prefix := scope + "/"
+	var out []string
 	for _, rel := range written {
-		if rel == scope {
-			return []string{rel}
+		if rel == scope || strings.HasPrefix(rel, prefix) {
+			out = append(out, rel)
 		}
 	}
-	return written
+	if len(out) == 0 {
+		return written
+	}
+	return out
 }
 
 func fetchFlat(ctx context.Context, c *sfapi.Client, t *Target) ([]RemoteFile, error) {

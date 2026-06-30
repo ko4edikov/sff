@@ -33,10 +33,9 @@ type Target struct {
 
 	// Retrieve-kind fields: what to pull from the org via the Metadata API and
 	// how to narrow the comparison once it is converted back to source format.
-	RetrieveType   string           // Metadata API type to retrieve (e.g. "CustomObject")
-	RetrieveMember string           // member to retrieve (the parent for decomposed children)
-	ScopeRel       string           // source-relative file to diff; empty diffs the whole result
-	Project        *project.Project // project the local source lives in
+	RetrieveSpecs []string         // Metadata API "Type:Member" specifiers to retrieve
+	ScopeRel      string           // source-relative path prefix to diff; empty diffs everything retrieved
+	Project       *project.Project // project the local source lives in
 }
 
 // flatTypes maps a flat file extension to its Tooling object and source field.
