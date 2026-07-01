@@ -70,10 +70,17 @@ sff org display              # default org (~/.sf/config.json target-org)
 sff org display pr-dev       # by alias (~/.sfdx/alias.json)
 sff org display user@x.com   # by username
 sff org display pr-dev --refresh   # refresh the access token first
+sff org open                 # open the default org in your browser
+sff org open pr-dev          # open a specific org (alias, username, or -o)
+sff org open -p lightning/setup/SetupOneHome/home   # land on a specific page
+sff org open --url-only      # print the frontdoor login URL instead of opening
 ```
 
 `sff org list` reads the auth files directly (no token decryption, no network),
 so it's instant; it skips sf's `*.sandbox.json` tracking stubs.
+
+`sff org open` refreshes the access token and opens a logged-in browser session
+via `frontdoor.jsp` (analog of `sf org open`); `--url-only` prints the URL.
 
 `sff org list metadata-types` calls the Metadata API `describeMetadata` (analog
 of `sf org list metadata-types`) and prints each type's `directoryName`,

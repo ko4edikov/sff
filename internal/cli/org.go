@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"text/tabwriter"
 
@@ -22,6 +25,7 @@ func newOrgCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newOrgDisplayCmd())
 	cmd.AddCommand(newOrgListCmd())
+	cmd.AddCommand(newOrgOpenCmd())
 	return cmd
 }
 
@@ -199,4 +203,79 @@ func mask(s string) string {
 		return "****"
 	}
 	return s[:6] + "…" + s[len(s)-4:]
+}
+
+func newOrgOpenCmd() *cobra.Command {
+	var path string
+	var urlOnly bool
+	cmd := &cobra.Command{
+		Use:   "open [target]",
+		Short: "Open an org in the default browser (like sf org open)",
+		Long: "Open a logged-in browser session for an org using its stored credentials.\n" +
+			"The target may be given as a positional argument, via -o, or omitted to use\n" +
+			"the default org. Use --path to land on a specific page and --url-only to\n" +
+			"print the login URL instead of opening a browser.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Precedence: positional target > --target-org > configured default.
+			target := targetOrg
+			if len(args) == 1 {
+				target = args[0]
+			}
+			return runOrgOpen(cmd.Context(), target, path, urlOnly)
+		},
+	}
+	cmd.Flags().StringVarP(&path, "path", "p", "", "relative path to open (e.g. lightning/setup/SetupOneHome/home)")
+	cmd.Flags().BoolVarP(&urlOnly, "url-only", "r", false, "print the login URL instead of opening a browser")
+	addTargetOrgFlag(cmd)
+	return cmd
+}
+
+func runOrgOpen(ctx context.Context, target, path string, urlOnly bool) error {
+	org, err := auth.Resolve(target)
+	if err != nil {
+		return err
+	}
+	// Refresh so the frontdoor session is minted from a valid access token.
+	if err := org.Refresh(ctx); err != nil {
+		return err
+	}
+
+	loginURL := frontDoorURL(org.InstanceURL, org.AccessToken, path)
+	if urlOnly {
+		fmt.Println(loginURL)
+		return nil
+	}
+	if err := openBrowser(loginURL); err != nil {
+		return fmt.Errorf("open browser: %w (try --url-only)", err)
+	}
+	fmt.Printf("Opening %s in your browser…\n", org.Username)
+	return nil
+}
+
+// frontDoorURL builds a Salesforce frontdoor.jsp URL that logs the browser into
+// the org using the access token, optionally redirecting to a relative path.
+func frontDoorURL(instanceURL, accessToken, path string) string {
+	base := strings.TrimRight(instanceURL, "/")
+	q := url.Values{"sid": {accessToken}}
+	if path != "" {
+		q.Set("retURL", "/"+strings.TrimLeft(path, "/"))
+	}
+	return base + "/secur/frontdoor.jsp?" + q.Encode()
+}
+
+// openBrowser launches the OS default browser pointed at target.
+func openBrowser(target string) error {
+	var name string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		name = "open"
+	case "windows":
+		name, args = "rundll32", []string{"url.dll,FileProtocolHandler"}
+	default:
+		name = "xdg-open"
+	}
+	args = append(args, target)
+	return exec.Command(name, args...).Start()
 }
