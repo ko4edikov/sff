@@ -45,12 +45,18 @@ type TypeResolver struct {
 // describe catalog to offer (e.g. offline recompose).
 var defaultResolver = NewTypeResolver(nil)
 
-// NewTypeResolver builds a resolver from the friendly aliases and, when d is
-// non-nil, every type and child type in the describe catalog.
-func NewTypeResolver(d *DescribeResult) *TypeResolver {
-	canon := make(map[string]string, len(typeAliases))
+// NewTypeResolver builds a resolver from the friendly aliases, any extra
+// canonical type names, and — when d is non-nil — every type and child type in
+// the describe catalog. extra lets a caller register a known, offline set of
+// canonical names (e.g. the Tooling-deploy-supported types) so case-insensitive
+// resolution works without a live describe call.
+func NewTypeResolver(d *DescribeResult, extra ...string) *TypeResolver {
+	canon := make(map[string]string, len(typeAliases)+len(extra))
 	for k, v := range typeAliases {
 		canon[k] = v
+	}
+	for _, name := range extra {
+		canon[strings.ToLower(name)] = name
 	}
 	if d != nil {
 		for _, o := range d.Objects {
@@ -117,6 +123,18 @@ func ParseSpecifiers(specs []string, version string, r *TypeResolver) (*Package,
 		pkg.Types = append(pkg.Types, PackageTypes{Members: members, Name: typ})
 	}
 	return pkg, nil
+}
+
+// BuildPackage produces a manifest from the two mutually exclusive selection
+// styles shared by retrieve and deploy: an existing package.xml (manifest, the
+// "-x" flag) takes precedence, otherwise "-m" specifiers are parsed with type
+// names canonicalized through r. It centralizes the manifest-or-specifiers
+// branch so callers don't each repeat it.
+func BuildPackage(manifest string, specs []string, version string, r *TypeResolver) (*Package, error) {
+	if manifest != "" {
+		return LoadManifest(manifest)
+	}
+	return ParseSpecifiers(specs, version, r)
 }
 
 // LoadManifest reads an existing package.xml for the "-x" flag.

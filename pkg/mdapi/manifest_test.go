@@ -1,6 +1,9 @@
 package mdapi
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 // membersOf returns the members recorded for a type name (canonical), or nil.
 func membersOf(p *Package, name string) []string {
@@ -58,6 +61,58 @@ func TestParseSpecifiersAliasesWithoutCatalog(t *testing.T) {
 	}
 	if m := membersOf(pkg, "ApexClass"); len(m) != 1 || m[0] != "*" {
 		t.Fatalf("class alias / wildcard not resolved: %v", pkg.Types)
+	}
+}
+
+func TestNewTypeResolverExtraNames(t *testing.T) {
+	r := NewTypeResolver(nil, "StaticResource", "ApexTrigger")
+	if got := r.Resolve("staticresource"); got != "StaticResource" {
+		t.Fatalf("Resolve(staticresource) = %q", got)
+	}
+	if got := r.Resolve("APEXTRIGGER"); got != "ApexTrigger" {
+		t.Fatalf("Resolve(APEXTRIGGER) = %q", got)
+	}
+	// aliases still work alongside extras
+	if got := r.Resolve("class"); got != "ApexClass" {
+		t.Fatalf("Resolve(class) = %q", got)
+	}
+	// unknown passes through unchanged
+	if got := r.Resolve("Whatever"); got != "Whatever" {
+		t.Fatalf("Resolve(Whatever) = %q", got)
+	}
+}
+
+func TestBuildPackageManifestTakesPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/package.xml"
+	xml := `<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+  <types><members>Existing</members><name>ApexClass</name></types>
+  <version>60.0</version>
+</Package>`
+	if err := os.WriteFile(path, []byte(xml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// specs are ignored when a manifest is given
+	pkg, err := BuildPackage(path, []string{"PermissionSet:Admin"}, "60.0", nil)
+	if err != nil {
+		t.Fatalf("BuildPackage: %v", err)
+	}
+	if m := membersOf(pkg, "ApexClass"); len(m) != 1 || m[0] != "Existing" {
+		t.Fatalf("manifest not loaded: %v", pkg.Types)
+	}
+	if membersOf(pkg, "PermissionSet") != nil {
+		t.Fatal("specs should be ignored when manifest is set")
+	}
+}
+
+func TestBuildPackageFallsBackToSpecs(t *testing.T) {
+	pkg, err := BuildPackage("", []string{"apexclass:A,B"}, "60.0", NewTypeResolver(nil, "ApexClass"))
+	if err != nil {
+		t.Fatalf("BuildPackage: %v", err)
+	}
+	if m := membersOf(pkg, "ApexClass"); len(m) != 2 || m[0] != "A" || m[1] != "B" {
+		t.Fatalf("specs not parsed: %v", pkg.Types)
 	}
 }
 

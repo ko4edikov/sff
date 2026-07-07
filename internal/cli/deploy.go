@@ -53,6 +53,7 @@ func newDeployCmd() *cobra.Command {
 			"daily edit loop.",
 		Example: `  sff deploy -d force-app/main/default
   sff deploy -m ApexClass:MyClass -m LWC:myCmp
+  sff deploy -m permissionset:Admin,Standard,ReadOnly
   sff deploy -x manifest/package.xml --check-only
   sff deploy -d force-app -l RunSpecifiedTests --tests MyTest --tests OtherTest
   sff deploy -d ./mdapi --metadata-format
@@ -93,7 +94,7 @@ func newDeployCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&sourceDir, "source-dir", "d", "", "source-format directory to deploy")
-	cmd.Flags().StringArrayVarP(&metadata, "metadata", "m", nil, "metadata to deploy as Type or Type:Name (repeatable)")
+	cmd.Flags().StringArrayVarP(&metadata, "metadata", "m", nil, "metadata to deploy as Type, Type:Name or Type:Name1,Name2 (case-insensitive, repeatable)")
 	cmd.Flags().StringVarP(&manifest, "manifest", "x", "", "path to a package.xml listing what to deploy")
 	cmd.Flags().StringVar(&projectDir, "project-dir", "", "sfdx project to resolve -m/-x members from (default: search up from cwd)")
 	cmd.Flags().BoolVarP(&checkOnly, "check-only", "c", false, "validate the deploy without saving changes")
@@ -238,13 +239,7 @@ func recomposeSelection(sel deploySelection, version string, catalog *mdapi.Desc
 		return source.RecomposeDir(sel.sourceDir, version, catalog)
 	}
 
-	var pkg *mdapi.Package
-	var err error
-	if sel.manifest != "" {
-		pkg, err = mdapi.LoadManifest(sel.manifest)
-	} else {
-		pkg, err = mdapi.ParseSpecifiers(sel.metadata, version, mdapi.NewTypeResolver(catalog))
-	}
+	pkg, err := mdapi.BuildPackage(sel.manifest, sel.metadata, version, mdapi.NewTypeResolver(catalog))
 	if err != nil {
 		return nil, err
 	}
@@ -294,6 +289,16 @@ var toolingSupported = map[string]bool{
 	"StaticResource":           true,
 	"AuraDefinitionBundle":     true,
 	"LightningComponentBundle": true,
+}
+
+// toolingResolver canonicalizes -m type names for --tooling case-insensitively
+// and offline, seeded from toolingSupported (plus the built-in friendly aliases).
+func toolingResolver() *mdapi.TypeResolver {
+	names := make([]string, 0, len(toolingSupported))
+	for name := range toolingSupported {
+		names = append(names, name)
+	}
+	return mdapi.NewTypeResolver(nil, names...)
 }
 
 // incompatibleWithTooling returns a description of the first flag that cannot be
@@ -482,19 +487,14 @@ func resolveToolingComponents(sel deploySelection, version string) (in sfapi.Too
 
 // recomposeToolingEntries recomposes the selection to metadata-format entries
 // with no describe catalog (heuristics only, so resolution stays offline). For
-// -m/-x it first rejects unsupported types and wildcards.
+// -m/-x it first rejects unsupported types and wildcards. Type names still
+// resolve case-insensitively against the fixed set of Tooling-supported types.
 func recomposeToolingEntries(sel deploySelection, version string) (*source.RecomposeResult, error) {
 	if sel.sourceDir != "" {
 		return source.RecomposeDir(sel.sourceDir, version, nil)
 	}
 
-	var pkg *mdapi.Package
-	var err error
-	if sel.manifest != "" {
-		pkg, err = mdapi.LoadManifest(sel.manifest)
-	} else {
-		pkg, err = mdapi.ParseSpecifiers(sel.metadata, version, nil)
-	}
+	pkg, err := mdapi.BuildPackage(sel.manifest, sel.metadata, version, toolingResolver())
 	if err != nil {
 		return nil, err
 	}

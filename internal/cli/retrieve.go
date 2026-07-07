@@ -75,12 +75,7 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, so
 	// fall back to friendly aliases and the converter to its built-in heuristics.
 	catalog, _, _ := client.DescribeMetadataCached(ctx, false)
 
-	var pkg *mdapi.Package
-	if manifest != "" {
-		pkg, err = mdapi.LoadManifest(manifest)
-	} else {
-		pkg, err = mdapi.ParseSpecifiers(metadata, apiVersion, mdapi.NewTypeResolver(catalog))
-	}
+	pkg, err := mdapi.BuildPackage(manifest, metadata, apiVersion, mdapi.NewTypeResolver(catalog))
 	if err != nil {
 		return err
 	}
