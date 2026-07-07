@@ -30,6 +30,7 @@ func newRetrieveCmd() *cobra.Command {
 			"Pass -d to write the converted source into that directory instead of merging;\n" +
 			"add --metadata-format to unzip the raw metadata-format files into -d instead.",
 		Example: `  sff retrieve -m ApexClass:MyClass
+  sff retrieve -m permissionset:Admin,Standard,ReadOnly -o pr-dev
   sff retrieve -m ApexClass -m LWC:myCmp -o pr-dev
   sff retrieve -x manifest/package.xml
   sff retrieve -m ApexClass:MyClass -d ./out
@@ -48,7 +49,7 @@ func newRetrieveCmd() *cobra.Command {
 			return runRetrieve(cmd.Context(), metadata, manifest, outputDir, sourceDest, projectDir, apiVersion, metadataFormat)
 		},
 	}
-	cmd.Flags().StringArrayVarP(&metadata, "metadata", "m", nil, "metadata to retrieve as Type or Type:Name (repeatable)")
+	cmd.Flags().StringArrayVarP(&metadata, "metadata", "m", nil, "metadata to retrieve as Type, Type:Name or Type:Name1,Name2 (case-insensitive, repeatable)")
 	cmd.Flags().StringVarP(&manifest, "manifest", "x", "", "path to a package.xml to retrieve")
 	cmd.Flags().BoolVar(&metadataFormat, "metadata-format", false, "unzip raw metadata-format files into -d instead of converting to source")
 	cmd.Flags().StringVarP(&outputDir, "output-dir", "d", "./mdapi", "output directory: converted source tree, or raw files with --metadata-format")
@@ -65,11 +66,20 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, so
 		return err
 	}
 
+	client := newMDClient(org)
+	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
+
+	// The describe catalog powers case-insensitive type resolution below and
+	// content/XML-only classification during conversion later; fetch it once
+	// (cached, best-effort) and reuse. A failure here is non-fatal — type names
+	// fall back to friendly aliases and the converter to its built-in heuristics.
+	catalog, _, _ := client.DescribeMetadataCached(ctx, false)
+
 	var pkg *mdapi.Package
 	if manifest != "" {
 		pkg, err = mdapi.LoadManifest(manifest)
 	} else {
-		pkg, err = mdapi.ParseSpecifiers(metadata, apiVersion)
+		pkg, err = mdapi.ParseSpecifiers(metadata, apiVersion, mdapi.NewTypeResolver(catalog))
 	}
 	if err != nil {
 		return err
@@ -88,9 +98,6 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, so
 			return fmt.Errorf("%w; use --metadata-format to retrieve without a project", err)
 		}
 	}
-
-	client := newMDClient(org)
-	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
 
 	start := time.Now()
 	prog := progress.Start("retrieving")
@@ -117,10 +124,6 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, so
 		fmt.Printf("retrieved %d file(s) to %s (metadata format) in %s\n", len(written), outputDir, fmtDuration(time.Since(start)))
 		return nil
 	}
-
-	// The describe catalog drives content/XML-only classification; a failure
-	// here is non-fatal — the converter falls back to its built-in heuristics.
-	catalog, _, _ := client.DescribeMetadataCached(ctx, false)
 
 	conv, err := source.ConvertZipToSource(res.ZipFile, proj, catalog, sourceDest)
 	if err != nil {

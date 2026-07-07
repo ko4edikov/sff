@@ -53,7 +53,7 @@ type RetrievedFile struct {
 // opens the files asynchronously, so they must outlive this process — mirroring
 // the Tooling diff path, which also leaves its temp files in place.
 func FetchRetrieve(ctx context.Context, c *mdapi.Client, catalog *mdapi.DescribeResult, t *Target) (files []RetrievedFile, remoteDir string, err error) {
-	pkg, err := mdapi.ParseSpecifiers(t.RetrieveSpecs, c.APIVersion)
+	pkg, err := mdapi.ParseSpecifiers(t.RetrieveSpecs, c.APIVersion, mdapi.NewTypeResolver(catalog))
 	if err != nil {
 		return nil, "", err
 	}

@@ -33,19 +33,53 @@ var typeAliases = map[string]string{
 	"class": "ApexClass",
 }
 
-// resolveType returns the canonical Metadata API type name for a user-supplied
-// type, applying case-insensitive aliases but otherwise passing it through.
-func resolveType(t string) string {
-	if canon, ok := typeAliases[strings.ToLower(t)]; ok {
+// TypeResolver canonicalizes user-supplied metadata type names case-insensitively.
+// It combines the built-in friendly aliases with the org's describe catalog when
+// one is supplied, so "permissionset", "PERMISSIONSET" and "PermissionSet" all
+// resolve to the canonical API name. A nil resolver falls back to aliases only.
+type TypeResolver struct {
+	canon map[string]string // lower(name) -> canonical
+}
+
+// defaultResolver knows only the friendly aliases; used when a caller has no
+// describe catalog to offer (e.g. offline recompose).
+var defaultResolver = NewTypeResolver(nil)
+
+// NewTypeResolver builds a resolver from the friendly aliases and, when d is
+// non-nil, every type and child type in the describe catalog.
+func NewTypeResolver(d *DescribeResult) *TypeResolver {
+	canon := make(map[string]string, len(typeAliases))
+	for k, v := range typeAliases {
+		canon[k] = v
+	}
+	if d != nil {
+		for _, o := range d.Objects {
+			canon[strings.ToLower(o.Name)] = o.Name
+			for _, child := range o.ChildXMLNames {
+				canon[strings.ToLower(child)] = child
+			}
+		}
+	}
+	return &TypeResolver{canon: canon}
+}
+
+// Resolve returns the canonical type name for t, or t unchanged if unknown.
+func (r *TypeResolver) Resolve(t string) string {
+	if r == nil {
+		r = defaultResolver
+	}
+	if canon, ok := r.canon[strings.ToLower(t)]; ok {
 		return canon
 	}
 	return t
 }
 
 // ParseSpecifiers builds a Package from "-m" values. Each spec is either
-// "Type:Name" (a specific member) or a bare "Type" (wildcard "*"). Members are
-// grouped by type and the type order is preserved by first appearance.
-func ParseSpecifiers(specs []string, version string) (*Package, error) {
+// "Type:Name" (a specific member), "Type:a,b,c" (several members of one type) or
+// a bare "Type" (wildcard "*"). Type names are canonicalized through r (nil uses
+// aliases only). Members are grouped by type and the type order is preserved by
+// first appearance.
+func ParseSpecifiers(specs []string, version string, r *TypeResolver) (*Package, error) {
 	if len(specs) == 0 {
 		return nil, fmt.Errorf("no metadata specified")
 	}
@@ -56,19 +90,24 @@ func ParseSpecifiers(specs []string, version string) (*Package, error) {
 		if spec == "" {
 			continue
 		}
-		typ, member := spec, "*"
+		typ, memberList := spec, "*"
 		if i := strings.Index(spec, ":"); i >= 0 {
-			typ, member = spec[:i], spec[i+1:]
+			typ, memberList = spec[:i], spec[i+1:]
 		}
-		typ = resolveType(strings.TrimSpace(typ))
-		member = strings.TrimSpace(member)
-		if typ == "" || member == "" {
+		typ = r.Resolve(strings.TrimSpace(typ))
+		if typ == "" {
 			return nil, fmt.Errorf("invalid metadata specifier %q (want Type or Type:Name)", spec)
 		}
 		if _, seen := byType[typ]; !seen {
 			order = append(order, typ)
 		}
-		byType[typ] = append(byType[typ], member)
+		for _, member := range strings.Split(memberList, ",") {
+			member = strings.TrimSpace(member)
+			if member == "" {
+				return nil, fmt.Errorf("invalid metadata specifier %q (want Type or Type:Name)", spec)
+			}
+			byType[typ] = append(byType[typ], member)
+		}
 	}
 
 	pkg := &Package{Xmlns: metadataNS, Version: numericVersion(version)}

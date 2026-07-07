@@ -243,7 +243,7 @@ func recomposeSelection(sel deploySelection, version string, catalog *mdapi.Desc
 	if sel.manifest != "" {
 		pkg, err = mdapi.LoadManifest(sel.manifest)
 	} else {
-		pkg, err = mdapi.ParseSpecifiers(sel.metadata, version)
+		pkg, err = mdapi.ParseSpecifiers(sel.metadata, version, mdapi.NewTypeResolver(catalog))
 	}
 	if err != nil {
 		return nil, err
@@ -493,7 +493,7 @@ func recomposeToolingEntries(sel deploySelection, version string) (*source.Recom
 	if sel.manifest != "" {
 		pkg, err = mdapi.LoadManifest(sel.manifest)
 	} else {
-		pkg, err = mdapi.ParseSpecifiers(sel.metadata, version)
+		pkg, err = mdapi.ParseSpecifiers(sel.metadata, version, nil)
 	}
 	if err != nil {
 		return nil, err
