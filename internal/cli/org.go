@@ -206,15 +206,16 @@ func mask(s string) string {
 }
 
 func newOrgOpenCmd() *cobra.Command {
-	var path string
+	var path, browser string
 	var urlOnly bool
 	cmd := &cobra.Command{
 		Use:   "open [target]",
-		Short: "Open an org in the default browser (like sf org open)",
+		Short: "Open an org in a browser (like sf org open)",
 		Long: "Open a logged-in browser session for an org using its stored credentials.\n" +
 			"The target may be given as a positional argument, via -o, or omitted to use\n" +
-			"the default org. Use --path to land on a specific page and --url-only to\n" +
-			"print the login URL instead of opening a browser.",
+			"the default org. Use --path to land on a specific page, --browser to pick a\n" +
+			"specific browser (chrome, edge, firefox) instead of the OS default, and\n" +
+			"--url-only to print the login URL instead of opening a browser.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Precedence: positional target > --target-org > configured default.
@@ -222,16 +223,17 @@ func newOrgOpenCmd() *cobra.Command {
 			if len(args) == 1 {
 				target = args[0]
 			}
-			return runOrgOpen(cmd.Context(), target, path, urlOnly)
+			return runOrgOpen(cmd.Context(), target, path, browser, urlOnly)
 		},
 	}
 	cmd.Flags().StringVarP(&path, "path", "p", "", "relative path to open (e.g. lightning/setup/SetupOneHome/home)")
+	cmd.Flags().StringVarP(&browser, "browser", "b", "", "browser to open in: chrome, edge, or firefox (default: OS default)")
 	cmd.Flags().BoolVarP(&urlOnly, "url-only", "r", false, "print the login URL instead of opening a browser")
 	addTargetOrgFlag(cmd)
 	return cmd
 }
 
-func runOrgOpen(ctx context.Context, target, path string, urlOnly bool) error {
+func runOrgOpen(ctx context.Context, target, path, browser string, urlOnly bool) error {
 	org, err := auth.Resolve(target)
 	if err != nil {
 		return err
@@ -246,7 +248,7 @@ func runOrgOpen(ctx context.Context, target, path string, urlOnly bool) error {
 		fmt.Println(loginURL)
 		return nil
 	}
-	if err := openBrowser(loginURL); err != nil {
+	if err := openBrowser(loginURL, browser); err != nil {
 		return fmt.Errorf("open browser: %w (try --url-only)", err)
 	}
 	fmt.Printf("Opening %s in your browser…\n", org.Username)
@@ -264,18 +266,69 @@ func frontDoorURL(instanceURL, accessToken, path string) string {
 	return base + "/secur/frontdoor.jsp?" + q.Encode()
 }
 
-// openBrowser launches the OS default browser pointed at target.
-func openBrowser(target string) error {
-	var name string
-	var args []string
+// openBrowser launches a browser pointed at target. When browser is empty the OS
+// default browser is used; otherwise browser names a specific browser (chrome,
+// edge, firefox) to launch, matching sf org open --browser.
+func openBrowser(target, browser string) error {
+	name, args, err := browserCommand(browser, target)
+	if err != nil {
+		return err
+	}
+	return exec.Command(name, args...).Start()
+}
+
+// browserCommand resolves the OS-specific command that opens target in the named
+// browser. An empty browser selects the OS default handler; a recognized name
+// (chrome, edge, firefox) launches that browser via the platform's app launcher.
+func browserCommand(browser, target string) (string, []string, error) {
+	if browser == "" {
+		switch runtime.GOOS {
+		case "darwin":
+			return "open", []string{target}, nil
+		case "windows":
+			return "rundll32", []string{"url.dll,FileProtocolHandler", target}, nil
+		default:
+			return "xdg-open", []string{target}, nil
+		}
+	}
+
+	key := strings.ToLower(strings.TrimSpace(browser))
+	// Per-OS launcher name for each supported browser: macOS opens by application
+	// name, Linux by binary on PATH, Windows by registered App Path via "start".
+	apps := map[string]map[string]string{
+		"darwin": {
+			"chrome":  "Google Chrome",
+			"edge":    "Microsoft Edge",
+			"firefox": "Firefox",
+		},
+		"windows": {
+			"chrome":  "chrome",
+			"edge":    "msedge",
+			"firefox": "firefox",
+		},
+		"linux": {
+			"chrome":  "google-chrome",
+			"edge":    "microsoft-edge",
+			"firefox": "firefox",
+		},
+	}
+	osKey := runtime.GOOS
+	if _, ok := apps[osKey]; !ok {
+		osKey = "linux" // treat other unix-likes like Linux (binary on PATH)
+	}
+	app, ok := apps[osKey][key]
+	if !ok {
+		return "", nil, fmt.Errorf("unknown browser %q (use chrome, edge, or firefox)", browser)
+	}
+
 	switch runtime.GOOS {
 	case "darwin":
-		name = "open"
+		return "open", []string{"-a", app, target}, nil
 	case "windows":
-		name, args = "rundll32", []string{"url.dll,FileProtocolHandler"}
+		// The empty "" is start's title argument; without it the browser name is
+		// consumed as the window title instead of the program to launch.
+		return "cmd", []string{"/c", "start", "", app, target}, nil
 	default:
-		name = "xdg-open"
+		return app, []string{target}, nil
 	}
-	args = append(args, target)
-	return exec.Command(name, args...).Start()
 }
