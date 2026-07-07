@@ -26,24 +26,32 @@ func newRetrieveCmd() *cobra.Command {
 		Short: "Retrieve metadata from an org (Metadata API)",
 		Long: "Retrieve metadata from an org via the Metadata API, selected by -m Type:Name\n" +
 			"specifiers or an existing package.xml. By default the result is converted to\n" +
-			"source format and merged into the sfdx project (like sf project retrieve start);\n" +
-			"use --metadata-format to unzip the raw metadata-format files into -d instead.",
+			"source format and merged into the sfdx project (like sf project retrieve start).\n" +
+			"Pass -d to write the converted source into that directory instead of merging;\n" +
+			"add --metadata-format to unzip the raw metadata-format files into -d instead.",
 		Example: `  sff retrieve -m ApexClass:MyClass
   sff retrieve -m ApexClass -m LWC:myCmp -o pr-dev
   sff retrieve -x manifest/package.xml
+  sff retrieve -m ApexClass:MyClass -d ./out
   sff retrieve -m ApexClass:MyClass --metadata-format -d ./mdapi`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(metadata) == 0 && manifest == "" {
 				return fmt.Errorf("specify metadata with -m or a manifest with -x")
 			}
-			return runRetrieve(cmd.Context(), metadata, manifest, outputDir, projectDir, apiVersion, metadataFormat)
+			// -d only overrides source placement when the user set it; the
+			// metadata-format default ("./mdapi") must not leak into source mode.
+			sourceDest := ""
+			if cmd.Flags().Changed("output-dir") {
+				sourceDest = outputDir
+			}
+			return runRetrieve(cmd.Context(), metadata, manifest, outputDir, sourceDest, projectDir, apiVersion, metadataFormat)
 		},
 	}
 	cmd.Flags().StringArrayVarP(&metadata, "metadata", "m", nil, "metadata to retrieve as Type or Type:Name (repeatable)")
 	cmd.Flags().StringVarP(&manifest, "manifest", "x", "", "path to a package.xml to retrieve")
 	cmd.Flags().BoolVar(&metadataFormat, "metadata-format", false, "unzip raw metadata-format files into -d instead of converting to source")
-	cmd.Flags().StringVarP(&outputDir, "output-dir", "d", "./mdapi", "directory for --metadata-format output")
+	cmd.Flags().StringVarP(&outputDir, "output-dir", "d", "./mdapi", "output directory: converted source tree, or raw files with --metadata-format")
 	cmd.Flags().StringVar(&projectDir, "project-dir", "", "sfdx project to write source into (default: search up from cwd)")
 	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "Metadata API version")
 	cmd.MarkFlagsMutuallyExclusive("metadata", "manifest")
@@ -51,7 +59,7 @@ func newRetrieveCmd() *cobra.Command {
 	return cmd
 }
 
-func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, projectDir, apiVersion string, metadataFormat bool) error {
+func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, sourceDest, projectDir, apiVersion string, metadataFormat bool) error {
 	org, err := auth.Resolve(targetOrg)
 	if err != nil {
 		return err
@@ -114,13 +122,17 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, pr
 	// here is non-fatal — the converter falls back to its built-in heuristics.
 	catalog, _, _ := client.DescribeMetadataCached(ctx, false)
 
-	conv, err := source.ConvertZipToSource(res.ZipFile, proj, catalog)
+	conv, err := source.ConvertZipToSource(res.ZipFile, proj, catalog, sourceDest)
 	if err != nil {
 		return err
 	}
 	for _, w := range conv.Warnings {
 		fmt.Fprintln(os.Stderr, "warning:", w)
 	}
-	fmt.Printf("retrieved %d file(s) to %s (source format) in %s\n", len(conv.Written), proj.Root, fmtDuration(time.Since(start)))
+	destLabel := proj.Root
+	if sourceDest != "" {
+		destLabel = sourceDest
+	}
+	fmt.Printf("retrieved %d file(s) to %s (source format) in %s\n", len(conv.Written), destLabel, fmtDuration(time.Since(start)))
 	return nil
 }

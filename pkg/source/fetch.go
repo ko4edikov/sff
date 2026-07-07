@@ -79,7 +79,7 @@ func FetchRetrieve(ctx context.Context, c *mdapi.Client, catalog *mdapi.Describe
 	}
 	tmpProj := &project.Project{Root: tmpRoot, Dirs: []project.Dir{{Path: "force-app", Default: true}}}
 
-	conv, err := ConvertZipToSource(res.ZipFile, tmpProj, catalog)
+	conv, err := ConvertZipToSource(res.ZipFile, tmpProj, catalog, "")
 	if err != nil {
 		return nil, "", err
 	}
@@ -101,12 +101,12 @@ func FetchRetrieve(ctx context.Context, c *mdapi.Client, catalog *mdapi.Describe
 	written := filterScope(conv.Written, t.ScopeRel)
 	remotePaths := make([]string, 0, len(written))
 	for _, rel := range written {
-		remote := placeInProject(tmpProj, rel)
+		remote := placeInProject(tmpProj, "", rel)
 		remotePaths = append(remotePaths, remote)
 		files = append(files, RetrievedFile{
 			Rel:        rel,
 			RemotePath: remote,
-			LocalPath:  placeInProject(t.Project, rel),
+			LocalPath:  placeInProject(t.Project, "", rel),
 		})
 	}
 	return files, CommonDir(remotePaths), nil
@@ -126,7 +126,7 @@ func narrowScope(t *Target) (string, bool) {
 	if i < 0 || spec[i+1:] == "*" {
 		return "", false
 	}
-	if fi, err := os.Stat(placeInProject(t.Project, t.ScopeRel)); err != nil || fi.IsDir() {
+	if fi, err := os.Stat(placeInProject(t.Project, "", t.ScopeRel)); err != nil || fi.IsDir() {
 		return "", false
 	}
 	return t.ScopeRel, true
@@ -158,7 +158,7 @@ func localOnly(t *Target, rel string) ([]RetrievedFile, string, error) {
 	return []RetrievedFile{{
 		Rel:        rel,
 		RemotePath: remote,
-		LocalPath:  placeInProject(t.Project, rel),
+		LocalPath:  placeInProject(t.Project, "", rel),
 	}}, "", nil
 }
 

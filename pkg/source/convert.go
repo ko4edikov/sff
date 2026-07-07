@@ -39,7 +39,10 @@ type ConvertResult struct {
 // via each type's metaFile/suffix; decomposed types (objects, …) are split per
 // the embedded decomposition table. Existing files are overwritten in place;
 // new files land under the default package directory.
-func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.DescribeResult) (*ConvertResult, error) {
+// dest, when non-empty, overrides placement: every converted source file is
+// written verbatim under dest/<source-rel> (see placeInProject) instead of
+// being merged into the project's package directories.
+func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.DescribeResult, dest string) (*ConvertResult, error) {
 	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
 	if err != nil {
 		return nil, fmt.Errorf("open retrieved zip: %w", err)
@@ -68,7 +71,7 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 		// or, for archives, expanded into a directory.
 		if folder == "staticresources" {
 			if strings.HasSuffix(name, ".resource-meta.xml") {
-				if err := writeFile(placeInProject(p, name), normalizeXML(data)); err != nil {
+				if err := writeFile(placeInProject(p, dest, name), normalizeXML(data)); err != nil {
 					return res, err
 				}
 				res.Written = append(res.Written, name)
@@ -80,7 +83,7 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 				return res, fmt.Errorf("static resource %s: %w", name, err)
 			}
 			for _, sp := range parts {
-				if err := writeFile(placeInProject(p, sp.rel), sp.data); err != nil {
+				if err := writeFile(placeInProject(p, dest, sp.rel), sp.data); err != nil {
 					return res, err
 				}
 				res.Written = append(res.Written, sp.rel)
@@ -96,7 +99,7 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 				return res, fmt.Errorf("decompose %s: %w", name, err)
 			}
 			for _, sp := range parts {
-				if err := writeFile(placeInProject(p, sp.rel), normalizeXML(sp.data)); err != nil {
+				if err := writeFile(placeInProject(p, dest, sp.rel), normalizeXML(sp.data)); err != nil {
 					return res, err
 				}
 				res.Written = append(res.Written, sp.rel)
@@ -111,7 +114,7 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 		if !isVerbatim(folder, byDir) {
 			data = normalizeXML(data)
 		}
-		if err := writeFile(placeInProject(p, srcRel), data); err != nil {
+		if err := writeFile(placeInProject(p, dest, srcRel), data); err != nil {
 			return res, err
 		}
 		res.Written = append(res.Written, srcRel)
@@ -166,11 +169,16 @@ func isVerbatim(folder string, byDir map[string]mdapi.MetadataObject) bool {
 	return contentFolders[folder]
 }
 
-// placeInProject returns the absolute path to write srcRel to: an existing file
-// in any package directory (overwritten in place), else a new file under the
-// default package directory's main/default tree.
-func placeInProject(p *project.Project, srcRel string) string {
+// placeInProject returns the path to write srcRel to. When dest is non-empty it
+// is an explicit output root and the file goes to dest/<srcRel> verbatim
+// (nothing is merged into the project). Otherwise placement follows the project:
+// an existing file in any package directory is overwritten in place, else a new
+// file lands under the default package directory's main/default tree.
+func placeInProject(p *project.Project, dest, srcRel string) string {
 	rel := filepath.FromSlash(srcRel)
+	if dest != "" {
+		return filepath.Join(dest, rel)
+	}
 	for _, d := range p.AbsDirs() {
 		for _, cand := range []string{
 			filepath.Join(d, "main", "default", rel),
