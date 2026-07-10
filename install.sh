@@ -21,7 +21,7 @@ case "$arch" in
 esac
 case "$os" in
   linux | darwin) ;;
-  *) echo "sff: unsupported OS: $os — download the Windows zip from Releases" >&2; exit 1 ;;
+  *) echo "sff: unsupported OS: $os — on Windows use install.ps1 (see README)" >&2; exit 1 ;;
 esac
 
 version="${SFF_VERSION:-}"

@@ -33,6 +33,14 @@ go install github.com/ko4edikov/sff@latest   # → ~/go/bin/sff
 curl -fsSL https://raw.githubusercontent.com/ko4edikov/sff/master/install.sh | sh
 ```
 
+**Windows** — PowerShell install script (installs to `%LOCALAPPDATA%\sff` and
+adds it to your user `PATH`; `SFF_VERSION`/`SFF_INSTALL_DIR` env overrides work
+the same as on Linux/macOS):
+
+```powershell
+irm https://raw.githubusercontent.com/ko4edikov/sff/master/install.ps1 | iex
+```
+
 **Manual** — download the archive for your OS/arch from the
 [Releases](https://github.com/ko4edikov/sff/releases) page (Windows ships a
 `.zip`), unpack, and put `sff` on your `PATH`.
