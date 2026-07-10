@@ -56,7 +56,8 @@ redacted in newer `sf` versions). Instead it reads the same files `sf` uses:
 - `~/.sfdx/<username>.json` — per-org auth: `accessToken`, `refreshToken`
   (both **encrypted**), `instanceUrl`, `loginUrl`, `clientId` (= `PlatformCLI`,
   the public OAuth client id used by sf).
-- Encryption key: macOS Keychain, `service=sfdx`, `account=local` (AES).
+- Encryption key: macOS Keychain (`service=sfdx`, `account=local`), Linux
+  libsecret, or `~/.sfdx/key.json` on Windows (also the universal fallback).
 - Default org: `~/.sf/config.json` (`target-org`) and `~/.sfdx/alias.json`.
 
 Flow: read auth file → fetch AES key from keychain → decrypt `accessToken` →
