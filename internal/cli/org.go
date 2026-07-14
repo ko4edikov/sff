@@ -214,8 +214,8 @@ func newOrgOpenCmd() *cobra.Command {
 		Long: "Open a logged-in browser session for an org using its stored credentials.\n" +
 			"The target may be given as a positional argument, via -o, or omitted to use\n" +
 			"the default org. Use --path to land on a specific page, --browser to pick a\n" +
-			"specific browser (chrome, edge, firefox) instead of the OS default, and\n" +
-			"--url-only to print the login URL instead of opening a browser.",
+			"specific browser (chrome, edge, firefox, or safari on macOS) instead of the\n" +
+			"OS default, and --url-only to print the login URL instead of opening a browser.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Precedence: positional target > --target-org > configured default.
@@ -227,7 +227,7 @@ func newOrgOpenCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&path, "path", "p", "", "relative path to open (e.g. lightning/setup/SetupOneHome/home)")
-	cmd.Flags().StringVarP(&browser, "browser", "b", "", "browser to open in: chrome, edge, or firefox (default: OS default)")
+	cmd.Flags().StringVarP(&browser, "browser", "b", "", "browser to open in: chrome, edge, firefox, or safari on macOS (default: OS default)")
 	cmd.Flags().BoolVarP(&urlOnly, "url-only", "r", false, "print the login URL instead of opening a browser")
 	addTargetOrgFlag(cmd)
 	return cmd
@@ -268,7 +268,7 @@ func frontDoorURL(instanceURL, accessToken, path string) string {
 
 // openBrowser launches a browser pointed at target. When browser is empty the OS
 // default browser is used; otherwise browser names a specific browser (chrome,
-// edge, firefox) to launch, matching sf org open --browser.
+// edge, firefox, or safari on macOS) to launch, matching sf org open --browser.
 func openBrowser(target, browser string) error {
 	name, args, err := browserCommand(browser, target)
 	if err != nil {
@@ -279,7 +279,8 @@ func openBrowser(target, browser string) error {
 
 // browserCommand resolves the OS-specific command that opens target in the named
 // browser. An empty browser selects the OS default handler; a recognized name
-// (chrome, edge, firefox) launches that browser via the platform's app launcher.
+// (chrome, edge, firefox; safari on macOS only) launches that browser via the
+// platform's app launcher.
 func browserCommand(browser, target string) (string, []string, error) {
 	if browser == "" {
 		switch runtime.GOOS {
@@ -300,6 +301,7 @@ func browserCommand(browser, target string) (string, []string, error) {
 			"chrome":  "Google Chrome",
 			"edge":    "Microsoft Edge",
 			"firefox": "Firefox",
+			"safari":  "Safari",
 		},
 		"windows": {
 			"chrome":  "chrome",
@@ -318,7 +320,10 @@ func browserCommand(browser, target string) (string, []string, error) {
 	}
 	app, ok := apps[osKey][key]
 	if !ok {
-		return "", nil, fmt.Errorf("unknown browser %q (use chrome, edge, or firefox)", browser)
+		if key == "safari" {
+			return "", nil, fmt.Errorf("safari is only available on macOS (use chrome, edge, or firefox)")
+		}
+		return "", nil, fmt.Errorf("unknown browser %q (use chrome, edge, firefox, or safari on macOS)", browser)
 	}
 
 	switch runtime.GOOS {
