@@ -1,9 +1,19 @@
 name: ci
 
+# paths-ignore skips the run only when every changed file matches; a commit that
+# also touches code still triggers CI.
 on:
   push:
     branches: ["**"]
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+      - "LICENSE"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+      - "LICENSE"
 
 permissions:
   contents: read
