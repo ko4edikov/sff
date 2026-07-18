@@ -151,7 +151,7 @@ func orgType(o *auth.OrgSummary) string {
 }
 
 func newOrgDisplayCmd() *cobra.Command {
-	var refresh, showToken bool
+	var refresh, showToken, asJSON bool
 	cmd := &cobra.Command{
 		Use:   "display [target]",
 		Short: "Show a stored org's credentials (reads sf's ~/.sfdx)",
@@ -163,16 +163,17 @@ func newOrgDisplayCmd() *cobra.Command {
 			if len(args) == 1 {
 				target = args[0]
 			}
-			return runOrgDisplay(cmd.Context(), target, refresh, showToken)
+			return runOrgDisplay(cmd.Context(), target, refresh, showToken, asJSON)
 		},
 	}
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "refresh the access token before displaying")
 	cmd.Flags().BoolVar(&showToken, "show-token", false, "print the full access token (sensitive)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "output JSON")
 	addTargetOrgFlag(cmd)
 	return cmd
 }
 
-func runOrgDisplay(ctx context.Context, target string, refresh, showToken bool) error {
+func runOrgDisplay(ctx context.Context, target string, refresh, showToken, asJSON bool) error {
 	org, err := auth.Resolve(target)
 	if err != nil {
 		return err
@@ -186,6 +187,19 @@ func runOrgDisplay(ctx context.Context, target string, refresh, showToken bool) 
 	token := mask(org.AccessToken)
 	if showToken {
 		token = org.AccessToken
+	}
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(struct {
+			Username    string `json:"username"`
+			Alias       string `json:"alias,omitempty"`
+			OrgID       string `json:"orgId"`
+			InstanceURL string `json:"instanceUrl"`
+			LoginURL    string `json:"loginUrl"`
+			IsSandbox   bool   `json:"isSandbox"`
+			AccessToken string `json:"accessToken"`
+		}{org.Username, org.Alias, org.OrgID, org.InstanceURL, org.LoginURL, org.IsSandbox, token})
 	}
 	fmt.Printf("Username     %s\n", org.Username)
 	fmt.Printf("Alias        %s\n", org.Alias)
