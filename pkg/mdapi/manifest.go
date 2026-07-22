@@ -27,10 +27,14 @@ type PackageTypes struct {
 
 // typeAliases maps a few friendly names to their real Metadata API type names.
 var typeAliases = map[string]string{
-	"lwc":   "LightningComponentBundle",
-	"aura":  "AuraDefinitionBundle",
-	"apex":  "ApexClass",
-	"class": "ApexClass",
+	"lwc":     "LightningComponentBundle",
+	"aura":    "AuraDefinitionBundle",
+	"apex":    "ApexClass",
+	"class":   "ApexClass",
+	"label":   "CustomLabel",
+	"object":  "CustomObject",
+	"page":    "ApexPage",
+	"trigger": "ApexTrigger",
 }
 
 // TypeResolver canonicalizes user-supplied metadata type names case-insensitively.

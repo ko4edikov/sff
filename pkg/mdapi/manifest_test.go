@@ -64,6 +64,32 @@ func TestParseSpecifiersAliasesWithoutCatalog(t *testing.T) {
 	}
 }
 
+func TestParseSpecifiersLabelAlias(t *testing.T) {
+	pkg, err := ParseSpecifiers([]string{"label:Greeting"}, "60.0", nil)
+	if err != nil {
+		t.Fatalf("ParseSpecifiers: %v", err)
+	}
+	if m := membersOf(pkg, "CustomLabel"); len(m) != 1 || m[0] != "Greeting" {
+		t.Fatalf("label alias not resolved: %v", pkg.Types)
+	}
+}
+
+func TestParseSpecifiersMoreAliases(t *testing.T) {
+	pkg, err := ParseSpecifiers([]string{"object:Account", "page:MyPage", "trigger:MyTrigger"}, "60.0", nil)
+	if err != nil {
+		t.Fatalf("ParseSpecifiers: %v", err)
+	}
+	if m := membersOf(pkg, "CustomObject"); len(m) != 1 || m[0] != "Account" {
+		t.Fatalf("object alias not resolved: %v", pkg.Types)
+	}
+	if m := membersOf(pkg, "ApexPage"); len(m) != 1 || m[0] != "MyPage" {
+		t.Fatalf("page alias not resolved: %v", pkg.Types)
+	}
+	if m := membersOf(pkg, "ApexTrigger"); len(m) != 1 || m[0] != "MyTrigger" {
+		t.Fatalf("trigger alias not resolved: %v", pkg.Types)
+	}
+}
+
 func TestNewTypeResolverExtraNames(t *testing.T) {
 	r := NewTypeResolver(nil, "StaticResource", "ApexTrigger")
 	if got := r.Resolve("staticresource"); got != "StaticResource" {
