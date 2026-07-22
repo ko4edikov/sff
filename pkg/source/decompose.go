@@ -1,6 +1,7 @@
 package source
 
 import (
+	"encoding/xml"
 	"fmt"
 	"path"
 	"strings"
@@ -159,6 +160,35 @@ func captureElement(lines []string, start int) ([]string, int) {
 		}
 	}
 	return lines[start:], len(lines) // malformed; take the rest
+}
+
+// customLabelsDoc parses just enough of a CustomLabels.labels-meta.xml document
+// to find one label by fullName; innerxml keeps each label's own field content
+// (value, categories, …) as raw, unreparsed bytes.
+type customLabelsDoc struct {
+	Labels []struct {
+		FullName string `xml:"fullName"`
+		Inner    string `xml:",innerxml"`
+	} `xml:"labels"`
+}
+
+// extractLabelBlock finds the <labels> element for fullName inside a composed
+// CustomLabels.labels-meta.xml document. Custom labels aren't decomposed into
+// per-label files — the Metadata API's "CustomLabel" child type (used to select
+// one label individually) instead names an element inside the single shared
+// file. The returned block's inner content is copied verbatim from the source
+// document, ready to drop straight into a rebuilt CustomLabels file.
+func extractLabelBlock(data []byte, fullName string) ([]byte, bool) {
+	var doc customLabelsDoc
+	if err := xml.Unmarshal(data, &doc); err != nil {
+		return nil, false
+	}
+	for _, l := range doc.Labels {
+		if l.FullName == fullName {
+			return []byte("<labels>" + l.Inner + "</labels>"), true
+		}
+	}
+	return nil, false
 }
 
 // extractFullName returns the value of the first <fullName>…</fullName> in block.

@@ -119,7 +119,25 @@ func RecomposeMembers(proj *project.Project, pkg *mdapi.Package, version string,
 
 	for _, t := range pkg.Types {
 		for _, member := range t.Members {
-			files, err := resolveMemberFiles(roots, t.Name, member, byType)
+			// "CustomLabel" (singular) is the Metadata API's child type for one
+			// individual label; unlike other flat types it has no file of its
+			// own — all labels share one CustomLabels.labels-meta.xml — so it
+			// needs its own resolution path instead of resolveMemberFiles.
+			if t.Name == "CustomLabel" && member != "*" {
+				block, ok := resolveCustomLabelMember(roots, member)
+				if !ok {
+					r.warnings = append(r.warnings, fmt.Sprintf("%s:%s not found in project", t.Name, member))
+					continue
+				}
+				r.addLabel(member, block)
+				continue
+			}
+
+			typeName := t.Name
+			if typeName == "CustomLabel" { // "*": every label, i.e. the whole shared file
+				typeName = "CustomLabels"
+			}
+			files, err := resolveMemberFiles(roots, typeName, member, byType)
 			if err != nil {
 				return nil, err
 			}
@@ -150,6 +168,7 @@ func newRecomposer(catalog *mdapi.DescribeResult) *recomposer {
 		members:    map[string]map[string]bool{},
 		decomposed: map[string]*decompGroup{},
 		statics:    map[string]*staticGroup{},
+		labels:     map[string][]byte{},
 	}
 }
 
@@ -160,11 +179,13 @@ func (r *recomposer) ingest(metaRel string, data []byte) {
 	r.route(segs[0], metaRel, segs, data)
 }
 
-// flush composes all buffered decomposed components and static resources.
+// flush composes all buffered decomposed components, individually selected
+// custom labels, and static resources.
 func (r *recomposer) flush() error {
 	if err := r.flushDecomposed(); err != nil {
 		return err
 	}
+	r.flushLabels()
 	return r.flushStatics()
 }
 
@@ -175,6 +196,7 @@ type recomposer struct {
 	members    map[string]map[string]bool // type → member set
 	decomposed map[string]*decompGroup    // component dir → its files
 	statics    map[string]*staticGroup    // resource name → its files
+	labels     map[string][]byte          // individually selected label fullName → its <labels> block
 	warnings   []string
 }
 
@@ -334,6 +356,43 @@ func (r *recomposer) flushStatics() error {
 		r.addMember("StaticResource", g.name)
 	}
 	return nil
+}
+
+// addLabel buffers one individually selected custom label (-m CustomLabel:Name),
+// recording it as a "CustomLabel" member so the manifest lists the specific
+// label rather than the whole CustomLabels type.
+func (r *recomposer) addLabel(name string, block []byte) {
+	r.labels[name] = block
+	r.addMember("CustomLabel", name)
+}
+
+// flushLabels composes the buffered individually selected labels into one
+// CustomLabels.labels-meta.xml entry. Skipped when a whole-file ingest (e.g. a
+// wildcard "CustomLabel:*") already produced that entry, since it already
+// covers every buffered label.
+func (r *recomposer) flushLabels() {
+	if len(r.labels) == 0 {
+		return
+	}
+	const dest = "labels/CustomLabels.labels" // XML-only type: metadata format drops "-meta.xml"
+	if _, exists := r.entries[dest]; exists {
+		return
+	}
+	names := make([]string, 0, len(r.labels))
+	for n := range r.labels {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
+	b.WriteString(`<CustomLabels xmlns="` + mdNamespace + `">` + "\n")
+	for _, n := range names {
+		b.Write(r.labels[n])
+		b.WriteByte('\n')
+	}
+	b.WriteString("</CustomLabels>\n")
+	r.entries[dest] = []byte(b.String())
 }
 
 // packStaticResource turns the buffered content back into the .resource binary:

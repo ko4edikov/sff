@@ -156,6 +156,23 @@ func staticResourcePaths(srDir, member string) []string {
 	return paths
 }
 
+// resolveCustomLabelMember extracts one custom label's <labels> block by
+// fullName from the shared CustomLabels.labels-meta.xml file under the first
+// package root that has a match. Unlike other flat types, an individual label
+// (the "CustomLabel" child type) has no file of its own to look up.
+func resolveCustomLabelMember(roots []string, member string) ([]byte, bool) {
+	for _, root := range roots {
+		data, err := os.ReadFile(filepath.Join(root, "labels", "CustomLabels.labels-meta.xml"))
+		if err != nil {
+			continue
+		}
+		if block, ok := extractLabelBlock(data, member); ok {
+			return block, true
+		}
+	}
+	return nil, false
+}
+
 // readMemberFiles reads each path and pairs it with its path relative to root,
 // de-duplicating repeats.
 func readMemberFiles(root string, paths []string) ([]memberFile, error) {

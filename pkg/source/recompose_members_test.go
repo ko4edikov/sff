@@ -113,6 +113,85 @@ func TestRecomposeMembersWildcard(t *testing.T) {
 	}
 }
 
+// TestRecomposeMembersCustomLabel selects individual custom labels out of the
+// single shared CustomLabels.labels-meta.xml file via the Metadata API's
+// "CustomLabel" child type, leaving unselected labels out of the deploy.
+func TestRecomposeMembersCustomLabel(t *testing.T) {
+	proj := writeProject(t, map[string]string{
+		"labels/CustomLabels.labels-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+			"<CustomLabels xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n" +
+			"    <labels>\n" +
+			"        <fullName>Greeting</fullName>\n" +
+			"        <value>Hello</value>\n" +
+			"    </labels>\n" +
+			"    <labels>\n" +
+			"        <fullName>Farewell</fullName>\n" +
+			"        <value>Bye</value>\n" +
+			"    </labels>\n" +
+			"</CustomLabels>\n",
+	})
+	pkg := &mdapi.Package{Types: []mdapi.PackageTypes{
+		{Name: "CustomLabel", Members: []string{"Greeting", "Ghost"}},
+	}}
+
+	rec, err := RecomposeMembers(proj, pkg, "60.0", nil)
+	if err != nil {
+		t.Fatalf("RecomposeMembers: %v", err)
+	}
+
+	data, ok := rec.Entries["labels/CustomLabels.labels"]
+	if !ok {
+		t.Fatal("missing labels/CustomLabels.labels entry")
+	}
+	if !bytes.Contains(data, []byte("<fullName>Greeting</fullName>")) {
+		t.Errorf("Greeting missing from recomposed labels:\n%s", data)
+	}
+	if bytes.Contains(data, []byte("<fullName>Farewell</fullName>")) {
+		t.Errorf("Farewell leaked in: -m should select only the named label\n%s", data)
+	}
+
+	if !hasWarning(rec.Warnings, "CustomLabel:Ghost") {
+		t.Errorf("expected a not-found warning for Ghost, got %v", rec.Warnings)
+	}
+
+	var members []string
+	for _, ty := range rec.Package.Types {
+		if ty.Name == "CustomLabel" {
+			members = ty.Members
+		}
+	}
+	if !equalStrings(members, []string{"Greeting"}) {
+		t.Errorf("CustomLabel members = %v, want [Greeting]", members)
+	}
+}
+
+// TestRecomposeMembersCustomLabelWildcard selects every label with "*", which
+// should ingest the shared file whole rather than going through per-label
+// extraction.
+func TestRecomposeMembersCustomLabelWildcard(t *testing.T) {
+	proj := writeProject(t, map[string]string{
+		"labels/CustomLabels.labels-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+			"<CustomLabels xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n" +
+			"    <labels>\n" +
+			"        <fullName>Greeting</fullName>\n" +
+			"        <value>Hello</value>\n" +
+			"    </labels>\n" +
+			"</CustomLabels>\n",
+	})
+	pkg := &mdapi.Package{Types: []mdapi.PackageTypes{
+		{Name: "CustomLabel", Members: []string{"*"}},
+	}}
+
+	rec, err := RecomposeMembers(proj, pkg, "60.0", nil)
+	if err != nil {
+		t.Fatalf("RecomposeMembers: %v", err)
+	}
+	mustHave(t, rec, "labels/CustomLabels.labels")
+	if len(rec.Warnings) != 0 {
+		t.Errorf("unexpected warnings: %v", rec.Warnings)
+	}
+}
+
 func hasWarning(warnings []string, sub string) bool {
 	for _, w := range warnings {
 		if strings.Contains(w, sub) {
