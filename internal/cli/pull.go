@@ -1,0 +1,132 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/ko4edikov/sff/pkg/auth"
+	"github.com/ko4edikov/sff/pkg/mdapi"
+	"github.com/ko4edikov/sff/pkg/progress"
+	"github.com/ko4edikov/sff/pkg/project"
+	"github.com/ko4edikov/sff/pkg/sfapi"
+	"github.com/ko4edikov/sff/pkg/source"
+)
+
+func newPullCmd() *cobra.Command {
+	var projectDir, apiVersion string
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "pull",
+		Short: "Refresh the whole local project from an org",
+		Long: "Refresh every metadata component the project already tracks: snapshot which\n" +
+			"types/members and folder each local file lives in, wipe the package directories,\n" +
+			"retrieve that same scope from the org, and write it back into source format at\n" +
+			"the same paths (including custom, non-standard folder layouts). Review the result\n" +
+			"with `git status`/`git diff` afterward.\n\n" +
+			"Refuses to run against a dirty git working tree (uncommitted changes would be\n" +
+			"indistinguishable from the refresh) unless --force is passed.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runPull(cmd.Context(), projectDir, apiVersion, force)
+		},
+	}
+	cmd.Flags().StringVar(&projectDir, "project-dir", "", "sfdx project to refresh (default: search up from cwd)")
+	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "Metadata API version")
+	cmd.Flags().BoolVar(&force, "force", false, "proceed even if the git working tree has uncommitted changes")
+	addTargetOrgFlag(cmd)
+	return cmd
+}
+
+func runPull(ctx context.Context, projectDir, apiVersion string, force bool) error {
+	start := projectDir
+	if start == "" {
+		start = "."
+	}
+	proj, err := project.Find(start)
+	if err != nil {
+		return err
+	}
+
+	if err := checkGitClean(proj.Root, force); err != nil {
+		return err
+	}
+
+	org, err := auth.Resolve(targetOrg)
+	if err != nil {
+		return err
+	}
+	client := newMDClient(org)
+	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
+	catalog, _, _ := client.DescribeMetadataCached(ctx, false)
+
+	dirs := proj.AbsDirs()
+	index := source.BuildPlacementIndex(dirs, catalog)
+	specs := source.LocalScope(dirs, catalog)
+	if len(specs) == 0 {
+		return fmt.Errorf("no local metadata found under %v; nothing to pull", dirs)
+	}
+
+	for _, d := range dirs {
+		if err := os.RemoveAll(d); err != nil {
+			return fmt.Errorf("clear %s: %w", d, err)
+		}
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return err
+		}
+	}
+
+	pkg, err := mdapi.BuildPackage("", specs, apiVersion, mdapi.NewTypeResolver(catalog))
+	if err != nil {
+		return err
+	}
+
+	pullStart := time.Now()
+	prog := progress.Start("pulling")
+	res, err := client.RetrieveAndWait(ctx, pkg, func(attempt int) {
+		prog.Update(fmt.Sprintf("pulling (poll %d)", attempt))
+	})
+	prog.Stop()
+	if err != nil {
+		return err
+	}
+	for _, m := range res.Messages {
+		fmt.Fprintln(os.Stderr, "warning:", m)
+	}
+
+	conv, err := source.ConvertZipToSource(res.ZipFile, proj, catalog, "", index)
+	if err != nil {
+		return err
+	}
+	for _, w := range conv.Warnings {
+		fmt.Fprintln(os.Stderr, "warning:", w)
+	}
+
+	fmt.Printf("pulled %d component(s), %d file(s) in %s\n", len(specs), len(conv.Written), fmtDuration(time.Since(pullStart)))
+	fmt.Println("review with: git status / git diff")
+	return nil
+}
+
+// checkGitClean fails when root's git working tree has uncommitted changes
+// (staged, unstaged, or untracked), unless force is set. This guards `sff
+// pull`'s wipe-then-retrieve step: without a clean baseline, the resulting
+// git diff would mix the org refresh with the user's own in-progress work.
+func checkGitClean(root string, force bool) error {
+	if force {
+		return nil
+	}
+	cmd := exec.Command("git", "-C", root, "status", "--porcelain")
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("git status: %w", err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		return fmt.Errorf("working tree at %s is not clean:\n%s\ncommit or stash your changes first, or pass --force to proceed anyway", root, out)
+	}
+	return nil
+}
