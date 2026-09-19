@@ -119,3 +119,45 @@ func TestRevertIgnorableDiffsRevertsWhitespaceOnly(t *testing.T) {
 		t.Fatalf("Real.cls should not have been reverted: %q", got)
 	}
 }
+
+// TestRevertIgnorableDiffsHandlesReflowedLines reproduces a real case: an
+// Apex Component retrieve merged two source lines into one (Salesforce
+// reflowed "<apex:component ...>\n{!X}" into "<apex:component ...>{!X}"). A
+// strictly line-by-line whitespace comparison sees a real change (the line
+// count differs); whitespace-blank must still treat it as whitespace-only
+// since every non-whitespace character is identical.
+func TestRevertIgnorableDiffsHandlesReflowedLines(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	pkg := filepath.Join(dir, "force-app")
+	if err := os.MkdirAll(filepath.Join(pkg, "components"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	compFile := filepath.Join(pkg, "components", "EUR_Datetime.component")
+	committed := "<apex:component access=\"global\">\n    {!FormattedDatetime}\n</apex:component>"
+	if err := os.WriteFile(compFile, []byte(committed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCommitAll(t, dir, "initial")
+
+	reflowed := "<apex:component access=\"global\">{!FormattedDatetime}\n</apex:component>"
+	if err := os.WriteFile(compFile, []byte(reflowed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reverted, err := revertIgnorableDiffs(dir, []string{pkg}, ignoreWSBlank)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reverted != 1 {
+		t.Fatalf("reverted = %d, want 1", reverted)
+	}
+
+	got, err := os.ReadFile(compFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != committed {
+		t.Fatalf("EUR_Datetime.component was not reverted: %q", got)
+	}
+}

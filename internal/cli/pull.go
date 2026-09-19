@@ -159,9 +159,7 @@ func revertIgnorableDiffs(root string, dirs []string, mode ignoreMode) (int, err
 		if err != nil {
 			continue
 		}
-		aOrig, aKey := prepLines(toLines(head), mode)
-		bOrig, bKey := prepLines(toLines(work), mode)
-		if unifiedDiff(aOrig, bOrig, aKey, bKey, "head", "", "work", "", 0) != "" {
+		if !equalIgnoringWhitespace(head, work, mode) {
 			continue // a real change under this ignore mode
 		}
 		reverted = append(reverted, rel)
@@ -174,6 +172,32 @@ func revertIgnorableDiffs(root string, dirs []string, mode ignoreMode) (int, err
 		return 0, fmt.Errorf("git checkout: %w", err)
 	}
 	return len(reverted), nil
+}
+
+// equalIgnoringWhitespace reports whether a and b are the same content under
+// mode's whitespace rules. ignoreWSBlank strips every whitespace character
+// (including newlines) from the whole file rather than comparing line by
+// line, so it isn't fooled when a retrieve reflows content across a
+// different number of lines than the committed version (e.g. Salesforce
+// merging two source lines into one) — a per-line diff would otherwise treat
+// that as a real change even though nothing but whitespace differs. The
+// stricter modes (trim, whitespace) stay line-based, since they exist to
+// preserve line structure while only ignoring in-line whitespace.
+func equalIgnoringWhitespace(a, b []byte, mode ignoreMode) bool {
+	if mode == ignoreWSBlank {
+		return stripSpace(string(a)) == stripSpace(string(b))
+	}
+	_, aKey := prepLines(toLines(a), mode)
+	_, bKey := prepLines(toLines(b), mode)
+	if len(aKey) != len(bKey) {
+		return false
+	}
+	for i := range aKey {
+		if aKey[i] != bKey[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // packageTypeNames returns pkg's metadata type names, in manifest order, for
