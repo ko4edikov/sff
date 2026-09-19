@@ -135,6 +135,19 @@ func convertStaticResource(binaryRel string, binary []byte, contentType string) 
 	return []splitFile{{rel: base + "." + staticExt(contentType), data: binary}}, nil
 }
 
+// textArchiveExt is the set of file extensions inside an expanded static
+// resource archive (e.g. a vendored JS library shipped as a zip) known to be
+// text. Only these get CRLF→LF normalization — everything else (images,
+// fonts, other binaries) is left byte-for-byte, since blindly normalizing an
+// arbitrary archive entry could corrupt binary content that happens to
+// contain a "\r\n" byte sequence.
+var textArchiveExt = map[string]bool{
+	".css": true, ".js": true, ".mjs": true, ".html": true, ".htm": true,
+	".xml": true, ".json": true, ".svg": true, ".txt": true, ".md": true,
+	".csv": true, ".less": true, ".scss": true, ".map": true,
+	".yml": true, ".yaml": true,
+}
+
 // unzipStaticResource expands an archive .resource into files under base/.
 func unzipStaticResource(base string, data []byte) ([]splitFile, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -154,6 +167,9 @@ func unzipStaticResource(base string, data []byte) ([]splitFile, error) {
 		rc.Close()
 		if err != nil {
 			return nil, fmt.Errorf("read archive entry %s: %w", f.Name, err)
+		}
+		if textArchiveExt[strings.ToLower(filepath.Ext(f.Name))] {
+			b = normalizeLineEndings(b)
 		}
 		out = append(out, splitFile{rel: path.Join(base, filepath.ToSlash(f.Name)), data: b})
 	}
