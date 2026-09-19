@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 )
 
 func newPullCmd() *cobra.Command {
-	var projectDir, apiVersion string
+	var projectDir, apiVersion, ignore string
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "pull",
@@ -30,20 +31,28 @@ func newPullCmd() *cobra.Command {
 			"the same paths (including custom, non-standard folder layouts). Review the result\n" +
 			"with `git status`/`git diff` afterward.\n\n" +
 			"Refuses to run against a dirty git working tree (uncommitted changes would be\n" +
-			"indistinguishable from the refresh) unless --force is passed.",
+			"indistinguishable from the refresh) unless --force is passed.\n\n" +
+			"--ignore reverts any retrieved file back to its committed version when the only\n" +
+			"difference is whitespace/blank lines (same semantics as `sff diff --ignore`), so\n" +
+			"those files don't show up in `git status` at all.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runPull(cmd.Context(), projectDir, apiVersion, force)
+			mode, err := parseIgnore(ignore)
+			if err != nil {
+				return err
+			}
+			return runPull(cmd.Context(), projectDir, apiVersion, force, mode)
 		},
 	}
 	cmd.Flags().StringVar(&projectDir, "project-dir", "", "sfdx project to refresh (default: search up from cwd)")
 	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "Metadata API version")
 	cmd.Flags().BoolVar(&force, "force", false, "proceed even if the git working tree has uncommitted changes")
+	cmd.Flags().StringVar(&ignore, "ignore", "none", "revert whitespace-only diffs after pulling: none, trim, whitespace, whitespace-blank")
 	addTargetOrgFlag(cmd)
 	return cmd
 }
 
-func runPull(ctx context.Context, projectDir, apiVersion string, force bool) error {
+func runPull(ctx context.Context, projectDir, apiVersion string, force bool, ignore ignoreMode) error {
 	start := projectDir
 	if start == "" {
 		start = "."
@@ -111,9 +120,60 @@ func runPull(ctx context.Context, projectDir, apiVersion string, force bool) err
 		fmt.Fprintln(os.Stderr, "warning:", w)
 	}
 
+	if ignore != ignoreNone {
+		fmt.Println("reverting whitespace-only diffs")
+		reverted, err := revertIgnorableDiffs(proj.Root, dirs, ignore)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("reverted %d whitespace-only file(s)\n", reverted)
+	}
+
 	fmt.Printf("pulled %d component(s), %d file(s) in %s\n", len(specs), len(conv.Written), fmtDuration(time.Since(pullStart)))
 	fmt.Println("review with: git status / git diff")
 	return nil
+}
+
+// revertIgnorableDiffs finds every file changed under dirs (relative to git
+// root) whose only difference from HEAD is whitespace/blank lines per mode
+// (the same comparison `sff diff --ignore` uses), and checks it back out to
+// its committed content so it drops out of `git status` entirely. Newly added
+// files (absent from HEAD) are never reverted — an empty-vs-content diff is
+// never whitespace-only. Returns the number of files reverted.
+func revertIgnorableDiffs(root string, dirs []string, mode ignoreMode) (int, error) {
+	args := append([]string{"-C", root, "diff", "--name-only", "--"}, dirs...)
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return 0, fmt.Errorf("git diff --name-only: %w", err)
+	}
+	var reverted []string
+	for _, rel := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if rel == "" {
+			continue
+		}
+		head, err := exec.Command("git", "-C", root, "show", "HEAD:"+rel).Output()
+		if err != nil {
+			continue // new file (not in HEAD): a real addition, never whitespace-only
+		}
+		work, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			continue
+		}
+		aOrig, aKey := prepLines(toLines(head), mode)
+		bOrig, bKey := prepLines(toLines(work), mode)
+		if unifiedDiff(aOrig, bOrig, aKey, bKey, "head", "", "work", "", 0) != "" {
+			continue // a real change under this ignore mode
+		}
+		reverted = append(reverted, rel)
+	}
+	if len(reverted) == 0 {
+		return 0, nil
+	}
+	args = append([]string{"-C", root, "checkout", "--"}, reverted...)
+	if err := exec.Command("git", args...).Run(); err != nil {
+		return 0, fmt.Errorf("git checkout: %w", err)
+	}
+	return len(reverted), nil
 }
 
 // packageTypeNames returns pkg's metadata type names, in manifest order, for
