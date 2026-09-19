@@ -117,8 +117,14 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 		srcRel := sourceRel(name, folder, byDir)
 		// XML-only types are re-serialized by sf (CRLF→LF, empty tags expanded);
 		// match that so re-retrieving doesn't churn sf-created files. Verbatim
-		// content/bundles are copied byte-for-byte.
-		if !isVerbatim(folder, byDir) {
+		// content/bundles (Apex, VF, LWC, Aura) are always text, so they still
+		// get CRLF→LF — orgs commonly return them with CRLF line endings, which
+		// would otherwise churn every line against an LF-committed project —
+		// but keep their content byte-for-byte otherwise (no empty-tag rewrite,
+		// which is XML-specific and would corrupt non-XML source).
+		if isVerbatim(folder, byDir) {
+			data = normalizeLineEndings(data)
+		} else {
 			data = normalizeXML(data)
 		}
 		if err := writeFile(placeInProject(p, dest, srcRel, index), data); err != nil {
@@ -218,9 +224,18 @@ var emptyTagRe = regexp.MustCompile(`<([\w:.-]+)([^<>]*?)\s*/>`)
 // open/close pair (<x/> → <x></x>). This keeps sff-converted files byte-aligned
 // with sf-created ones.
 func normalizeXML(data []byte) []byte {
+	s := string(normalizeLineEndings(data))
+	s = emptyTagRe.ReplaceAllString(s, "<$1$2></$1>")
+	return []byte(s)
+}
+
+// normalizeLineEndings converts CRLF and lone CR to LF. Orgs commonly return
+// verbatim content (Apex, VF, LWC, Aura) with CRLF line endings regardless of
+// how the project's source is committed; without this, every retrieve would
+// churn those files' line endings against an LF-committed project.
+func normalizeLineEndings(data []byte) []byte {
 	s := strings.ReplaceAll(string(data), "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
-	s = emptyTagRe.ReplaceAllString(s, "<$1$2></$1>")
 	return []byte(s)
 }
 
