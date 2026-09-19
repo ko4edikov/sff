@@ -120,7 +120,7 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, so
 		return nil
 	}
 
-	conv, err := source.ConvertZipToSource(res.ZipFile, proj, catalog, sourceDest)
+	conv, err := source.ConvertZipToSource(res.ZipFile, proj, catalog, sourceDest, nil)
 	if err != nil {
 		return err
 	}

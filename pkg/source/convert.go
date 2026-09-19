@@ -42,10 +42,17 @@ type ConvertResult struct {
 // dest, when non-empty, overrides placement: every converted source file is
 // written verbatim under dest/<source-rel> (see placeInProject) instead of
 // being merged into the project's package directories.
-func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.DescribeResult, dest string) (*ConvertResult, error) {
+// index, when non-nil, is used instead of scanning p's current tree (see
+// BuildPlacementIndex) — pass a snapshot taken before the tree was modified
+// (e.g. before a full-project wipe) so files land back where they were. Pass
+// nil to build the index fresh from p's current state (the normal case).
+func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.DescribeResult, dest string, index map[string]string) (*ConvertResult, error) {
 	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
 	if err != nil {
 		return nil, fmt.Errorf("open retrieved zip: %w", err)
+	}
+	if dest == "" && index == nil {
+		index = BuildPlacementIndex(p.AbsDirs(), catalog)
 	}
 
 	byDir := catalogByDir(catalog)
@@ -71,7 +78,7 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 		// or, for archives, expanded into a directory.
 		if folder == "staticresources" {
 			if strings.HasSuffix(name, ".resource-meta.xml") {
-				if err := writeFile(placeInProject(p, dest, name), normalizeXML(data)); err != nil {
+				if err := writeFile(placeInProject(p, dest, name, index), normalizeXML(data)); err != nil {
 					return res, err
 				}
 				res.Written = append(res.Written, name)
@@ -83,7 +90,7 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 				return res, fmt.Errorf("static resource %s: %w", name, err)
 			}
 			for _, sp := range parts {
-				if err := writeFile(placeInProject(p, dest, sp.rel), sp.data); err != nil {
+				if err := writeFile(placeInProject(p, dest, sp.rel, index), sp.data); err != nil {
 					return res, err
 				}
 				res.Written = append(res.Written, sp.rel)
@@ -99,7 +106,7 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 				return res, fmt.Errorf("decompose %s: %w", name, err)
 			}
 			for _, sp := range parts {
-				if err := writeFile(placeInProject(p, dest, sp.rel), normalizeXML(sp.data)); err != nil {
+				if err := writeFile(placeInProject(p, dest, sp.rel, index), normalizeXML(sp.data)); err != nil {
 					return res, err
 				}
 				res.Written = append(res.Written, sp.rel)
@@ -114,7 +121,7 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 		if !isVerbatim(folder, byDir) {
 			data = normalizeXML(data)
 		}
-		if err := writeFile(placeInProject(p, dest, srcRel), data); err != nil {
+		if err := writeFile(placeInProject(p, dest, srcRel, index), data); err != nil {
 			return res, err
 		}
 		res.Written = append(res.Written, srcRel)
@@ -171,13 +178,20 @@ func isVerbatim(folder string, byDir map[string]mdapi.MetadataObject) bool {
 
 // placeInProject returns the path to write srcRel to. When dest is non-empty it
 // is an explicit output root and the file goes to dest/<srcRel> verbatim
-// (nothing is merged into the project). Otherwise placement follows the project:
-// an existing file in any package directory is overwritten in place, else a new
-// file lands under the default package directory's main/default tree.
-func placeInProject(p *project.Project, dest, srcRel string) string {
+// (nothing is merged into the project). Otherwise placement checks index first
+// (an existing file anywhere in the tree, including nested custom module
+// folders — see BuildPlacementIndex), then the standard two candidate
+// locations, else a new file lands under the default package directory's
+// main/default tree.
+func placeInProject(p *project.Project, dest, srcRel string, index map[string]string) string {
 	rel := filepath.FromSlash(srcRel)
 	if dest != "" {
 		return filepath.Join(dest, rel)
+	}
+	if index != nil {
+		if hit, ok := index[srcRel]; ok {
+			return hit
+		}
 	}
 	for _, d := range p.AbsDirs() {
 		for _, cand := range []string{
