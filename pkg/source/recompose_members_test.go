@@ -192,6 +192,100 @@ func TestRecomposeMembersCustomLabelWildcard(t *testing.T) {
 	}
 }
 
+// TestRecomposeMembersCustomField selects a decomposed CustomObject child
+// (CustomField) directly, which must deploy as its own standalone component —
+// its file as-is, not recomposed back into the parent CustomObject.
+func TestRecomposeMembersCustomField(t *testing.T) {
+	proj := writeProject(t, map[string]string{
+		"objects/Account/fields/Name__c.field-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+			"<CustomField xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n" +
+			"    <fullName>Name__c</fullName>\n" +
+			"    <type>Text</type>\n" +
+			"    <length>80</length>\n" +
+			"</CustomField>\n",
+		"objects/Contact/fields/Other__c.field-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+			"<CustomField xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n" +
+			"    <fullName>Other__c</fullName>\n" +
+			"    <type>Text</type>\n" +
+			"    <length>10</length>\n" +
+			"</CustomField>\n",
+	})
+	pkg := &mdapi.Package{Types: []mdapi.PackageTypes{
+		{Name: "CustomField", Members: []string{"Account.Name__c", "Account.Ghost__c"}},
+	}}
+
+	rec, err := RecomposeMembers(proj, pkg, "60.0", nil)
+	if err != nil {
+		t.Fatalf("RecomposeMembers: %v", err)
+	}
+
+	data, ok := rec.Entries["objects/Account/fields/Name__c.field"]
+	if !ok {
+		t.Fatalf("missing objects/Account/fields/Name__c.field entry, got %v", entryPaths(rec))
+	}
+	if !bytes.Contains(data, []byte("<fullName>Name__c</fullName>")) {
+		t.Errorf("field file corrupted:\n%s", data)
+	}
+	if _, leaked := rec.Entries["objects/Contact/fields/Other__c.field"]; leaked {
+		t.Error("Other__c leaked in: -m should select only the named field")
+	}
+	if !hasWarning(rec.Warnings, "CustomField:Account.Ghost__c") {
+		t.Errorf("expected a not-found warning for Ghost__c, got %v", rec.Warnings)
+	}
+
+	var members []string
+	for _, ty := range rec.Package.Types {
+		if ty.Name == "CustomField" {
+			members = ty.Members
+		}
+	}
+	if !equalStrings(members, []string{"Account.Name__c"}) {
+		t.Errorf("CustomField members = %v, want [Account.Name__c]", members)
+	}
+}
+
+// TestRecomposeMembersCustomFieldWildcard selects every CustomField across
+// every object with "*".
+func TestRecomposeMembersCustomFieldWildcard(t *testing.T) {
+	proj := writeProject(t, map[string]string{
+		"objects/Account/fields/Name__c.field-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+			"<CustomField xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n" +
+			"    <fullName>Name__c</fullName>\n" +
+			"    <type>Text</type>\n" +
+			"</CustomField>\n",
+		"objects/Contact/fields/Other__c.field-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+			"<CustomField xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n" +
+			"    <fullName>Other__c</fullName>\n" +
+			"    <type>Text</type>\n" +
+			"</CustomField>\n",
+	})
+	pkg := &mdapi.Package{Types: []mdapi.PackageTypes{{Name: "CustomField", Members: []string{"*"}}}}
+
+	rec, err := RecomposeMembers(proj, pkg, "60.0", nil)
+	if err != nil {
+		t.Fatalf("RecomposeMembers: %v", err)
+	}
+	mustHave(t, rec, "objects/Account/fields/Name__c.field", "objects/Contact/fields/Other__c.field")
+
+	var members []string
+	for _, ty := range rec.Package.Types {
+		if ty.Name == "CustomField" {
+			members = ty.Members
+		}
+	}
+	if !equalStrings(members, []string{"Account.Name__c", "Contact.Other__c"}) {
+		t.Errorf("wildcard CustomField members = %v, want [Account.Name__c Contact.Other__c]", members)
+	}
+}
+
+func entryPaths(rec *RecomposeResult) []string {
+	paths := make([]string, 0, len(rec.Entries))
+	for p := range rec.Entries {
+		paths = append(paths, p)
+	}
+	return paths
+}
+
 func hasWarning(warnings []string, sub string) bool {
 	for _, w := range warnings {
 		if strings.Contains(w, sub) {

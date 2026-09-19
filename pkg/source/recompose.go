@@ -133,6 +133,27 @@ func RecomposeMembers(proj *project.Project, pkg *mdapi.Package, version string,
 				continue
 			}
 
+			// A decomposed child type (CustomField, ValidationRule, …) selected
+			// directly deploys as its own standalone component instead of being
+			// folded back into its parent's composed file, so it needs its own
+			// resolution path rather than the generic ingest-and-route below.
+			if rule, ok := childTypeIndex[t.Name]; ok {
+				files, err := resolveChildMemberFiles(roots, rule, member)
+				if err != nil {
+					return nil, err
+				}
+				if len(files) == 0 {
+					r.warnings = append(r.warnings, fmt.Sprintf("%s:%s not found in project", t.Name, member))
+					continue
+				}
+				for _, f := range files {
+					dest := strings.TrimSuffix(f.metaRel, "-meta.xml")
+					r.entries[dest] = f.data
+					r.addMember(t.Name, childMemberName(f.metaRel, rule))
+				}
+				continue
+			}
+
 			typeName := t.Name
 			if typeName == "CustomLabel" { // "*": every label, i.e. the whole shared file
 				typeName = "CustomLabels"

@@ -1,6 +1,7 @@
 package source
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -28,6 +29,91 @@ var decompByName = func() map[string]*DecompType {
 	}
 	return m
 }()
+
+// childRule is a decomposed child type's own Metadata API name (e.g.
+// "CustomField") resolved back to the parent decomposition it belongs to.
+type childRule struct {
+	parent *DecompType
+	child  DecompChild
+}
+
+// childTypeIndex indexes every decomposed child type by its own Metadata API
+// name, so it can be selected directly via -m/-x (e.g. "CustomField:Account.
+// X__c") instead of only through its parent's directory. Unlike the parent
+// type, a child deploys as its own standalone component — the Metadata API
+// accepts a lone CustomField (etc.) against an object that already exists in
+// the org — so its source file is used as-is rather than recomposed back into
+// the parent's single composed file.
+var childTypeIndex = func() map[string]childRule {
+	m := map[string]childRule{}
+	for _, t := range decompByDir {
+		for _, c := range t.Children {
+			m[c.Type] = childRule{parent: t, child: c}
+		}
+	}
+	return m
+}()
+
+// resolveChildMemberFiles finds the source file(s) for a decomposed child
+// component selected directly via -m/-x. member is either "Parent.Child" (one
+// component) or "*" (every component of the child type across every parent).
+func resolveChildMemberFiles(roots []string, rule childRule, member string) ([]memberFile, error) {
+	if member == "*" {
+		var out []memberFile
+		for _, root := range roots {
+			typeDir := filepath.Join(root, filepath.FromSlash(rule.parent.DirectoryName))
+			parents, _ := os.ReadDir(typeDir)
+			for _, p := range parents {
+				if !p.IsDir() {
+					continue
+				}
+				childDir := filepath.Join(typeDir, p.Name())
+				if rule.parent.Layout == "folderPerType" {
+					childDir = filepath.Join(childDir, rule.child.XMLTag)
+				}
+				for _, f := range walkFiles(childDir) {
+					if !strings.HasSuffix(f, "."+rule.child.Suffix+"-meta.xml") {
+						continue
+					}
+					files, err := readMemberFiles(root, []string{f})
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, files...)
+				}
+			}
+		}
+		return out, nil
+	}
+
+	parentName, childName, ok := strings.Cut(member, ".")
+	if !ok {
+		return nil, fmt.Errorf("invalid %s specifier %q (want Parent.Child)", rule.child.Type, member)
+	}
+	for _, root := range roots {
+		dir := filepath.Join(root, filepath.FromSlash(rule.parent.DirectoryName), parentName)
+		if rule.parent.Layout == "folderPerType" {
+			dir = filepath.Join(dir, rule.child.XMLTag)
+		}
+		p := filepath.Join(dir, childName+"."+rule.child.Suffix+"-meta.xml")
+		if !isFile(p) {
+			continue
+		}
+		return readMemberFiles(root, []string{p})
+	}
+	return nil, nil
+}
+
+// childMemberName derives the "Parent.Child" manifest member from a decomposed
+// child file's metadata-relative path (e.g.
+// "objects/Account/fields/X__c.field-meta.xml" -> "Account.X__c").
+func childMemberName(metaRel string, rule childRule) string {
+	segs := strings.Split(metaRel, "/")
+	parent := segs[1]
+	base := segs[len(segs)-1]
+	name := strings.TrimSuffix(base, "."+rule.child.Suffix+"-meta.xml")
+	return parent + "." + name
+}
 
 // memberFile is a resolved source file plus its metadata-relative path.
 type memberFile struct {
