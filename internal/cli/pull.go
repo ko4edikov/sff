@@ -71,8 +71,10 @@ func runPull(ctx context.Context, projectDir, apiVersion string, force bool) err
 	if len(specs) == 0 {
 		return fmt.Errorf("no local metadata found under %v; nothing to pull", dirs)
 	}
+	fmt.Printf("scanned local scope: %d metadata component(s)\n", len(specs))
 
 	for _, d := range dirs {
+		fmt.Printf("cleaning directory %s\n", d)
 		if err := os.RemoveAll(d); err != nil {
 			return fmt.Errorf("clear %s: %w", d, err)
 		}
@@ -85,6 +87,7 @@ func runPull(ctx context.Context, projectDir, apiVersion string, force bool) err
 	if err != nil {
 		return err
 	}
+	fmt.Printf("retrieving metadata types: %s\n", strings.Join(packageTypeNames(pkg), ", "))
 
 	pullStart := time.Now()
 	prog := progress.Start("pulling")
@@ -99,6 +102,7 @@ func runPull(ctx context.Context, projectDir, apiVersion string, force bool) err
 		fmt.Fprintln(os.Stderr, "warning:", m)
 	}
 
+	fmt.Println("converting retrieved metadata to source format")
 	conv, err := source.ConvertZipToSource(res.ZipFile, proj, catalog, "", index)
 	if err != nil {
 		return err
@@ -110,6 +114,17 @@ func runPull(ctx context.Context, projectDir, apiVersion string, force bool) err
 	fmt.Printf("pulled %d component(s), %d file(s) in %s\n", len(specs), len(conv.Written), fmtDuration(time.Since(pullStart)))
 	fmt.Println("review with: git status / git diff")
 	return nil
+}
+
+// packageTypeNames returns pkg's metadata type names, in manifest order, for
+// a human-readable progress line (e.g. "retrieving metadata types: ApexClass,
+// CustomObject, LightningComponentBundle").
+func packageTypeNames(pkg *mdapi.Package) []string {
+	names := make([]string, 0, len(pkg.Types))
+	for _, t := range pkg.Types {
+		names = append(names, t.Name)
+	}
+	return names
 }
 
 // checkGitClean fails when root's git working tree has uncommitted changes
