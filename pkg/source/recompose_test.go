@@ -123,6 +123,34 @@ func TestRecomposeSyntheticParent(t *testing.T) {
 	}
 }
 
+// TestRecomposeInlineParent recomposes when the residual parent file has its
+// root element written on a single line (e.g. a bare
+// "<CustomObject xmlns="...">…</CustomObject>", as a minimal hand-written
+// Custom Metadata Type definition may be) instead of retrieve's usual
+// pretty-printed, one-element-per-line layout.
+func TestRecomposeInlineParent(t *testing.T) {
+	co := decompByDir["objects"]
+	child, _ := childForFile(co, "Active__c.field-meta.xml")
+	field := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Active__c</fullName>
+    <type>Checkbox</type>
+</CustomField>
+`)
+	inlineParent := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata"></CustomObject>
+`)
+	g := &decompGroup{t: co, name: "Broker", parent: inlineParent, children: []decompChildFile{{child: child, data: field}}}
+	out, err := recomposeDecomposed(g)
+	if err != nil {
+		t.Fatalf("recompose: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "    <fields>") || !strings.Contains(s, "        <fullName>Active__c</fullName>") || !strings.Contains(s, "</CustomObject>") {
+		t.Errorf("inline-parent recompose wrong:\n%s", s)
+	}
+}
+
 func fileSet(parts []splitFile) []string {
 	s := make([]string, len(parts))
 	for i, p := range parts {

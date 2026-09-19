@@ -134,22 +134,14 @@ func RecomposeMembers(proj *project.Project, pkg *mdapi.Package, version string,
 			}
 
 			// A decomposed child type (CustomField, ValidationRule, …) selected
-			// directly deploys as its own standalone component instead of being
-			// folded back into its parent's composed file, so it needs its own
-			// resolution path rather than the generic ingest-and-route below.
+			// directly still deploys with the whole composed parent file in the
+			// zip — the Metadata API rejects a lone "objects/Account/fields/
+			// X__c.field" entry ("was not found in zipped directory") — but the
+			// manifest member stays narrow (e.g. "CustomField:Account.X__c"),
+			// matching how `sf project deploy start -m CustomField:...` behaves.
 			if rule, ok := childTypeIndex[t.Name]; ok {
-				files, err := resolveChildMemberFiles(roots, rule, member)
-				if err != nil {
+				if err := r.selectDecomposedChild(roots, rule, t.Name, member, byType); err != nil {
 					return nil, err
-				}
-				if len(files) == 0 {
-					r.warnings = append(r.warnings, fmt.Sprintf("%s:%s not found in project", t.Name, member))
-					continue
-				}
-				for _, f := range files {
-					dest := strings.TrimSuffix(f.metaRel, "-meta.xml")
-					r.entries[dest] = f.data
-					r.addMember(t.Name, childMemberName(f.metaRel, rule))
 				}
 				continue
 			}
@@ -157,6 +149,16 @@ func RecomposeMembers(proj *project.Project, pkg *mdapi.Package, version string,
 			typeName := t.Name
 			if typeName == "CustomLabel" { // "*": every label, i.e. the whole shared file
 				typeName = "CustomLabels"
+			}
+			if t := decompByName[typeName]; t != nil && member != "*" {
+				// A whole decomposed parent (re-)selected by its own type name
+				// wins over any narrower child selections queued for it, and
+				// skips re-resolving/re-ingesting a component already pulled in
+				// (e.g. by an earlier narrow child specifier for the same parent).
+				if g, exists := r.decomposed[t.DirectoryName+"/"+member]; exists {
+					g.fullSelected = true
+					continue
+				}
 			}
 			files, err := resolveMemberFiles(roots, typeName, member, byType)
 			if err != nil {
@@ -168,6 +170,7 @@ func RecomposeMembers(proj *project.Project, pkg *mdapi.Package, version string,
 			}
 			for _, f := range files {
 				r.ingest(f.metaRel, f.data)
+				r.markFullySelected(f.metaRel)
 			}
 		}
 	}
@@ -226,6 +229,21 @@ type decompGroup struct {
 	name     string
 	parent   []byte
 	children []decompChildFile
+	// fullSelected marks a component pulled in via its own parent type (or a
+	// -d directory walk) — its whole self is the manifest member. Left false
+	// when the component was only pulled in to back a narrower child
+	// selection (e.g. "CustomField:Account.X__c"), in which case narrow lists
+	// the specific child members to register instead.
+	fullSelected bool
+	narrow       []narrowMember
+}
+
+// narrowMember is one decomposed-child manifest member (e.g.
+// "CustomField":"Account.X__c") queued for a component that was selected only
+// through that child, not through its own parent type.
+type narrowMember struct {
+	typ    string
+	member string
 }
 
 type decompChildFile struct {
@@ -345,7 +363,9 @@ func (r *recomposer) routeStatic(segs []string, data []byte) {
 }
 
 // flushDecomposed composes each buffered decomposed component into one
-// metadata-format file.
+// metadata-format file. The manifest member is the whole component, unless it
+// was pulled in only to back one or more narrower child selections (queued in
+// narrow), in which case those child members are registered instead.
 func (r *recomposer) flushDecomposed() error {
 	for _, g := range r.decomposed {
 		data, err := recomposeDecomposed(g)
@@ -354,7 +374,83 @@ func (r *recomposer) flushDecomposed() error {
 		}
 		dest := path.Join(g.t.DirectoryName, g.name+"."+g.t.Suffix)
 		r.entries[dest] = data
+		if len(g.narrow) > 0 && !g.fullSelected {
+			for _, nm := range g.narrow {
+				r.addMember(nm.typ, nm.member)
+			}
+			continue
+		}
 		r.addMember(g.t.Name, g.name)
+	}
+	return nil
+}
+
+// markFullySelected records that the component owning metaRel was pulled in
+// via its own parent type (or a directory walk), so flushDecomposed registers
+// the whole component rather than any narrower child selections queued for it.
+func (r *recomposer) markFullySelected(metaRel string) {
+	segs := strings.Split(metaRel, "/")
+	if len(segs) < 2 {
+		return
+	}
+	if g := r.decomposed[segs[0]+"/"+segs[1]]; g != nil {
+		g.fullSelected = true
+	}
+}
+
+// selectDecomposedChild resolves one decomposed-child specifier (e.g.
+// "CustomField:Account.X__c" or the wildcard "CustomField:*") by pulling the
+// whole parent component into the zip — the Metadata API needs the composed
+// parent file even for a single field — while queuing the requested child
+// member(s) narrowly, so the manifest lists just the child(ren) asked for
+// instead of the whole parent (unless the parent itself is also separately
+// selected; see the fullSelected/narrow handling in flushDecomposed).
+func (r *recomposer) selectDecomposedChild(roots []string, rule childRule, typeName, member string, byType map[string]mdapi.MetadataObject) error {
+	if member == "*" {
+		matches, err := resolveChildMemberFiles(roots, rule, "*")
+		if err != nil {
+			return err
+		}
+		if len(matches) == 0 {
+			r.warnings = append(r.warnings, fmt.Sprintf("%s:* not found in project", typeName))
+			return nil
+		}
+		seen := map[string]bool{}
+		for _, f := range matches {
+			m := childMemberName(f.metaRel, rule)
+			if seen[m] {
+				continue
+			}
+			seen[m] = true
+			if err := r.selectDecomposedChild(roots, rule, typeName, m, byType); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	match, err := resolveChildMemberFiles(roots, rule, member)
+	if err != nil {
+		return err
+	}
+	if len(match) == 0 {
+		r.warnings = append(r.warnings, fmt.Sprintf("%s:%s not found in project", typeName, member))
+		return nil
+	}
+
+	parentName, _, _ := strings.Cut(member, ".")
+	key := rule.parent.DirectoryName + "/" + parentName
+	if _, exists := r.decomposed[key]; !exists {
+		files, err := resolveMemberFiles(roots, rule.parent.Name, parentName, byType)
+		if err != nil {
+			return err
+		}
+		for _, f := range files {
+			r.ingest(f.metaRel, f.data)
+		}
+	}
+	if g := r.decomposed[key]; g != nil && !g.fullSelected {
+		g.narrow = append(g.narrow, narrowMember{typ: typeName, member: member})
 	}
 	return nil
 }
@@ -461,7 +557,7 @@ func recomposeDecomposed(g *decompGroup) ([]byte, error) {
 			`<` + g.t.Name + ` xmlns="` + mdNamespace + `">` + "\n" +
 			`</` + g.t.Name + `>` + "\n")
 	}
-	lines := splitLines(parent)
+	lines := expandInlineRoot(splitLines(parent), g.t.Name)
 
 	closeTag := "</" + g.t.Name + ">"
 	closeIdx := -1
@@ -486,6 +582,47 @@ func recomposeDecomposed(g *decompGroup) ([]byte, error) {
 	out = append(out, childLines...)
 	out = append(out, lines[closeIdx:]...)
 	return []byte(strings.Join(out, "\n") + "\n"), nil
+}
+
+// expandInlineRoot splits a root element written on a single line — an empty
+// "<CustomObject xmlns="...">…</CustomObject>" or a self-closing
+// "<CustomObject .../>", as a hand-written or minimal source file (e.g. a
+// bare Custom Metadata Type definition) may have — into separate opening and
+// closing lines, so the line-based closing-tag search above (which expects
+// retrieve's usual pretty-printed layout, one element per line) can find it.
+func expandInlineRoot(lines []string, name string) []string {
+	openTag := "<" + name
+	closeTag := "</" + name + ">"
+	out := make([]string, 0, len(lines)+1)
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		switch {
+		case hasTagPrefix(trimmed, openTag) && strings.HasSuffix(trimmed, closeTag):
+			out = append(out, strings.TrimSuffix(trimmed, closeTag), closeTag)
+		case hasTagPrefix(trimmed, openTag) && strings.HasSuffix(trimmed, "/>"):
+			out = append(out, strings.TrimSuffix(trimmed, "/>")+">", closeTag)
+		default:
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// hasTagPrefix reports whether trimmed opens with tag as its own element name
+// (not merely sharing a string prefix, e.g. "<CustomObject" must not match
+// "<CustomObjectTranslation").
+func hasTagPrefix(trimmed, tag string) bool {
+	if !strings.HasPrefix(trimmed, tag) {
+		return false
+	}
+	if len(trimmed) == len(tag) {
+		return true
+	}
+	switch trimmed[len(tag)] {
+	case '>', ' ', '\t', '/':
+		return true
+	}
+	return false
 }
 
 // orderedChildren sorts a component's children by their type's declared order,

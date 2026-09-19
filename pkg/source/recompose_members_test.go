@@ -193,22 +193,28 @@ func TestRecomposeMembersCustomLabelWildcard(t *testing.T) {
 }
 
 // TestRecomposeMembersCustomField selects a decomposed CustomObject child
-// (CustomField) directly, which must deploy as its own standalone component —
-// its file as-is, not recomposed back into the parent CustomObject.
+// (CustomField) directly. The Metadata API rejects a lone field file, so the
+// zip must carry the whole composed parent object (including every other
+// local field/child), while the manifest stays narrowed to just the
+// requested field.
 func TestRecomposeMembersCustomField(t *testing.T) {
 	proj := writeProject(t, map[string]string{
+		"objects/Account/Account.object-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+			"<CustomObject xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n    <label>Account</label>\n</CustomObject>\n",
 		"objects/Account/fields/Name__c.field-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
 			"<CustomField xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n" +
 			"    <fullName>Name__c</fullName>\n" +
 			"    <type>Text</type>\n" +
 			"    <length>80</length>\n" +
 			"</CustomField>\n",
-		"objects/Contact/fields/Other__c.field-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+		"objects/Account/fields/Other__c.field-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
 			"<CustomField xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n" +
 			"    <fullName>Other__c</fullName>\n" +
 			"    <type>Text</type>\n" +
 			"    <length>10</length>\n" +
 			"</CustomField>\n",
+		"objects/Contact/Contact.object-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+			"<CustomObject xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n    <label>Contact</label>\n</CustomObject>\n",
 	})
 	pkg := &mdapi.Package{Types: []mdapi.PackageTypes{
 		{Name: "CustomField", Members: []string{"Account.Name__c", "Account.Ghost__c"}},
@@ -219,33 +225,41 @@ func TestRecomposeMembersCustomField(t *testing.T) {
 		t.Fatalf("RecomposeMembers: %v", err)
 	}
 
-	data, ok := rec.Entries["objects/Account/fields/Name__c.field"]
+	obj, ok := rec.Entries["objects/Account.object"]
 	if !ok {
-		t.Fatalf("missing objects/Account/fields/Name__c.field entry, got %v", entryPaths(rec))
+		t.Fatalf("missing objects/Account.object entry (the composed parent), got %v", entryPaths(rec))
 	}
-	if !bytes.Contains(data, []byte("<fullName>Name__c</fullName>")) {
-		t.Errorf("field file corrupted:\n%s", data)
+	// The whole object is composed, including the field that wasn't requested.
+	if !bytes.Contains(obj, []byte("<fullName>Name__c</fullName>")) || !bytes.Contains(obj, []byte("<fullName>Other__c</fullName>")) {
+		t.Errorf("composed object missing a field:\n%s", obj)
 	}
-	if _, leaked := rec.Entries["objects/Contact/fields/Other__c.field"]; leaked {
-		t.Error("Other__c leaked in: -m should select only the named field")
+	if _, leaked := rec.Entries["objects/Contact.object"]; leaked {
+		t.Error("Contact leaked in: -m should only pull the requested field's parent object")
 	}
 	if !hasWarning(rec.Warnings, "CustomField:Account.Ghost__c") {
 		t.Errorf("expected a not-found warning for Ghost__c, got %v", rec.Warnings)
 	}
 
-	var members []string
+	// The manifest stays narrow: just the requested field, not the whole object.
+	var customFieldMembers, customObjectMembers []string
 	for _, ty := range rec.Package.Types {
-		if ty.Name == "CustomField" {
-			members = ty.Members
+		switch ty.Name {
+		case "CustomField":
+			customFieldMembers = ty.Members
+		case "CustomObject":
+			customObjectMembers = ty.Members
 		}
 	}
-	if !equalStrings(members, []string{"Account.Name__c"}) {
-		t.Errorf("CustomField members = %v, want [Account.Name__c]", members)
+	if !equalStrings(customFieldMembers, []string{"Account.Name__c"}) {
+		t.Errorf("CustomField members = %v, want [Account.Name__c]", customFieldMembers)
+	}
+	if len(customObjectMembers) != 0 {
+		t.Errorf("unexpected CustomObject members = %v, want none", customObjectMembers)
 	}
 }
 
 // TestRecomposeMembersCustomFieldWildcard selects every CustomField across
-// every object with "*".
+// every object with "*", still narrowing the manifest per field.
 func TestRecomposeMembersCustomFieldWildcard(t *testing.T) {
 	proj := writeProject(t, map[string]string{
 		"objects/Account/fields/Name__c.field-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
@@ -265,7 +279,7 @@ func TestRecomposeMembersCustomFieldWildcard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecomposeMembers: %v", err)
 	}
-	mustHave(t, rec, "objects/Account/fields/Name__c.field", "objects/Contact/fields/Other__c.field")
+	mustHave(t, rec, "objects/Account.object", "objects/Contact.object")
 
 	var members []string
 	for _, ty := range rec.Package.Types {
@@ -275,6 +289,48 @@ func TestRecomposeMembersCustomFieldWildcard(t *testing.T) {
 	}
 	if !equalStrings(members, []string{"Account.Name__c", "Contact.Other__c"}) {
 		t.Errorf("wildcard CustomField members = %v, want [Account.Name__c Contact.Other__c]", members)
+	}
+}
+
+// TestRecomposeMembersCustomFieldThenWholeObject selects a field narrowly and
+// also the whole parent CustomObject in the same deploy; the whole-object
+// selection must win, registering just "CustomObject:Account" rather than
+// also listing the narrower field member.
+func TestRecomposeMembersCustomFieldThenWholeObject(t *testing.T) {
+	proj := writeProject(t, map[string]string{
+		"objects/Account/Account.object-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+			"<CustomObject xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n    <label>Account</label>\n</CustomObject>\n",
+		"objects/Account/fields/Name__c.field-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+			"<CustomField xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n" +
+			"    <fullName>Name__c</fullName>\n" +
+			"    <type>Text</type>\n" +
+			"</CustomField>\n",
+	})
+	pkg := &mdapi.Package{Types: []mdapi.PackageTypes{
+		{Name: "CustomField", Members: []string{"Account.Name__c"}},
+		{Name: "CustomObject", Members: []string{"Account"}},
+	}}
+
+	rec, err := RecomposeMembers(proj, pkg, "60.0", nil)
+	if err != nil {
+		t.Fatalf("RecomposeMembers: %v", err)
+	}
+	mustHave(t, rec, "objects/Account.object")
+
+	var customFieldMembers, customObjectMembers []string
+	for _, ty := range rec.Package.Types {
+		switch ty.Name {
+		case "CustomField":
+			customFieldMembers = ty.Members
+		case "CustomObject":
+			customObjectMembers = ty.Members
+		}
+	}
+	if len(customFieldMembers) != 0 {
+		t.Errorf("unexpected CustomField members = %v, want none (whole object should win)", customFieldMembers)
+	}
+	if !equalStrings(customObjectMembers, []string{"Account"}) {
+		t.Errorf("CustomObject members = %v, want [Account]", customObjectMembers)
 	}
 }
 
