@@ -118,6 +118,7 @@ func childMemberName(metaRel string, rule childRule) string {
 // memberFile is a resolved source file plus its metadata-relative path.
 type memberFile struct {
 	metaRel string
+	path    string // absolute path on disk
 	data    []byte
 }
 
@@ -278,7 +279,7 @@ func readMemberFiles(root string, paths []string) ([]memberFile, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, memberFile{metaRel: mr, data: data})
+		out = append(out, memberFile{metaRel: mr, path: p, data: data})
 	}
 	return out, nil
 }

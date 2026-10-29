@@ -175,12 +175,32 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 	if opts.CheckOnly {
 		verb = "validating"
 	}
+	start := time.Now()
+	res, err := deployWithProgress(ctx, client, org, zipBytes, opts, verb, wait)
+	if err != nil {
+		return err
+	}
+
+	noun := "deployed"
+	if opts.CheckOnly {
+		noun = "validated"
+	}
+	fmt.Printf("%s %d component(s) to %s in %s\n", noun, res.NumberComponentsDeployed, org.Username, fmtDuration(time.Since(start)))
+	if res.NumberTestsCompleted > 0 {
+		fmt.Printf("ran %d test(s), %d failed\n", res.NumberTestsCompleted, res.NumberTestErrors)
+	}
+	return nil
+}
+
+// deployWithProgress submits zipBytes, polls the deploy to completion behind a
+// spinner labelled verb, and reports a timeout or the component/test failures.
+// A non-nil error has already been reported to the user (it is an *ExitError).
+func deployWithProgress(ctx context.Context, client *mdapi.Client, org *auth.Org, zipBytes []byte, opts mdapi.DeployOptions, verb string, wait time.Duration) (*mdapi.DeployResult, error) {
 	if wait > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, wait)
 		defer cancel()
 	}
-	start := time.Now()
 	prog := progress.Start(verb)
 	res, err := client.DeployAndWait(ctx, zipBytes, opts, func(attempt int, r *mdapi.DeployResult) {
 		prog.Update(fmt.Sprintf("%s — %s (%d/%d components)",
@@ -194,21 +214,12 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 				id = res.ID
 			}
 			fmt.Fprintf(os.Stderr, "timed out after %s; deploy %s is still running in %s\n", fmtDuration(wait), id, org.Username)
-			return &ExitError{Code: 1}
+			return res, &ExitError{Code: 1}
 		}
 		printDeployFailures(res)
-		return &ExitError{Code: 1}
+		return res, &ExitError{Code: 1}
 	}
-
-	noun := "deployed"
-	if opts.CheckOnly {
-		noun = "validated"
-	}
-	fmt.Printf("%s %d component(s) to %s in %s\n", noun, res.NumberComponentsDeployed, org.Username, fmtDuration(time.Since(start)))
-	if res.NumberTestsCompleted > 0 {
-		fmt.Printf("ran %d test(s), %d failed\n", res.NumberTestsCompleted, res.NumberTestErrors)
-	}
-	return nil
+	return res, nil
 }
 
 // buildDeployPackage produces the zip entries and manifest to deploy. With

@@ -244,3 +244,13 @@ func TestNewDeployCmd_Validation(t *testing.T) {
 		})
 	}
 }
+
+func TestConfirmDelete(t *testing.T) {
+	tests := map[string]bool{"y\n": true, "YES\n": true, " yes \n": true, "n\n": false, "\n": false, "": false, "maybe\n": false}
+	for in, want := range tests {
+		var out bytes.Buffer
+		if got := confirmDelete(strings.NewReader(in), &out); got != want {
+			t.Errorf("confirmDelete(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
