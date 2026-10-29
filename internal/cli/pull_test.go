@@ -19,6 +19,9 @@ func initGitRepo(t *testing.T, dir string) {
 	run("init", "-q")
 	run("config", "user.email", "test@example.com")
 	run("config", "user.name", "Test")
+	// Git for Windows defaults to autocrlf=true, which rewrites LF to CRLF on
+	// checkout; tests compare file bytes exactly, so keep them verbatim.
+	run("config", "core.autocrlf", "false")
 }
 
 func TestCheckGitCleanRejectsDirtyTree(t *testing.T) {
