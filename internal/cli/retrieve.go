@@ -49,7 +49,7 @@ func newRetrieveCmd() *cobra.Command {
 			return runRetrieve(cmd.Context(), metadata, manifest, outputDir, sourceDest, projectDir, apiVersion, metadataFormat)
 		},
 	}
-	cmd.Flags().StringArrayVarP(&metadata, "metadata", "m", nil, "metadata to retrieve as Type, Type:Name or Type:Name1,Name2 (case-insensitive, repeatable)")
+	cmd.Flags().StringArrayVarP(&metadata, "metadata", "m", nil, "metadata to retrieve as Type, Type:Name or Type:Name1,Name2; names may use * and ? patterns, e.g. CustomObject:EUR_Score* (case-insensitive, repeatable)")
 	cmd.Flags().StringVarP(&manifest, "manifest", "x", "", "path to a package.xml to retrieve")
 	cmd.Flags().BoolVar(&metadataFormat, "metadata-format", false, "unzip raw metadata-format files into -d instead of converting to source")
 	cmd.Flags().StringVarP(&outputDir, "output-dir", "d", "./mdapi", "output directory: converted source tree, or raw files with --metadata-format")
@@ -77,6 +77,9 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, so
 
 	pkg, err := mdapi.BuildPackage(manifest, metadata, apiVersion, mdapi.NewTypeResolver(catalog))
 	if err != nil {
+		return err
+	}
+	if err := client.ExpandGlobs(ctx, pkg); err != nil {
 		return err
 	}
 
