@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -83,21 +84,26 @@ func ResolveDelete(proj *project.Project, paths []string, pkg *mdapi.Package, ve
 	if pkg != nil {
 		for _, t := range pkg.Types {
 			for _, member := range t.Members {
-				if member != "*" || t.Name == "CustomLabel" {
-					add(deleteSpec{t.Name, member})
+				if !isWildcard(member) || t.Name == "CustomLabel" {
+					add(deleteSpec{t.Name, member}) // labels expand below
 					continue
 				}
-				files, err := resolveSpecFiles(roots, t.Name, member, byType)
+				// Wildcards are matched against local source, not the org: only
+				// components that have local files can be deleted anyway.
+				files, err := resolveSpecFiles(roots, t.Name, "*", byType)
 				if err != nil {
 					return nil, err
 				}
+				matched := false
 				for _, f := range files {
-					if spec, ok := classifyDeleteFile(strings.Split(f.metaRel, "/"), byDir); ok {
+					spec, ok := classifyDeleteFile(strings.Split(f.metaRel, "/"), byDir)
+					if ok && spec.typ == t.Name && matchMember(member, spec.member) {
 						add(spec)
+						matched = true
 					}
 				}
-				if len(files) == 0 {
-					plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s:* not found in project", t.Name))
+				if !matched {
+					plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s:%s matches nothing in project", t.Name, member))
 				}
 			}
 		}
@@ -113,11 +119,16 @@ func ResolveDelete(proj *project.Project, paths []string, pkg *mdapi.Package, ve
 			// Labels share one CustomLabels file, so deleting one means editing
 			// that file rather than removing a file of its own.
 			names := []string{s.member}
-			if s.member == "*" {
-				names = allLabelNames(roots)
+			if isWildcard(s.member) {
+				names = nil
+				for _, n := range allLabelNames(roots) {
+					if matchMember(s.member, n) {
+						names = append(names, n)
+					}
+				}
 			}
 			for _, name := range names {
-				path, ok := findLabelsFile(roots, name)
+				labelsFile, ok := findLabelsFile(roots, name)
 				if !ok {
 					plan.Warnings = append(plan.Warnings, fmt.Sprintf("CustomLabel:%s not found in project", name))
 					continue
@@ -125,7 +136,7 @@ func ResolveDelete(proj *project.Project, paths []string, pkg *mdapi.Package, ve
 				if plan.LabelEdits == nil {
 					plan.LabelEdits = map[string][]string{}
 				}
-				plan.LabelEdits[path] = append(plan.LabelEdits[path], name)
+				plan.LabelEdits[labelsFile] = append(plan.LabelEdits[labelsFile], name)
 				members[s.typ] = append(members[s.typ], name)
 			}
 			continue
@@ -360,4 +371,17 @@ func dropLabelBlocks(data []byte, names []string) []byte {
 		i = end
 	}
 	return []byte(out.String())
+}
+
+// isWildcard reports whether a -m member is a "*"/"?" pattern.
+func isWildcard(member string) bool { return strings.ContainsAny(member, "*?") }
+
+// matchMember matches a member name against a "*"/"?" pattern, ignoring case.
+// A bare "*" matches everything, including folder-prefixed members.
+func matchMember(pattern, member string) bool {
+	if pattern == "*" {
+		return true
+	}
+	ok, _ := path.Match(strings.ToLower(pattern), strings.ToLower(member))
+	return ok
 }

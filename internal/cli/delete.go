@@ -40,7 +40,8 @@ func newDeleteCmd() *cobra.Command {
   sff delete -m ApexClass:MyClass -m LWC:myCmp
   sff delete -m CustomField:Account.Legacy__c -r
   sff delete -d force-app/main/default/objects/Account/fields --check-only
-  sff delete -m ApexClass:MyClass --dry-run`,
+  sff delete -m ApexClass:MyClass --dry-run
+  sff delete -m 'ApexClass:EUR_Score*' --dry-run`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(sourceDirs) == 0 && len(metadata) == 0 {
@@ -61,7 +62,7 @@ func newDeleteCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringArrayVarP(&sourceDirs, "source-dir", "d", nil, "source file or directory to delete (repeatable)")
-	cmd.Flags().StringArrayVarP(&metadata, "metadata", "m", nil, "metadata to delete as Type:Name or Type:Name1,Name2; a bare Type or * deletes every local component of it (case-insensitive, repeatable)")
+	cmd.Flags().StringArrayVarP(&metadata, "metadata", "m", nil, "metadata to delete as Type:Name or Type:Name1,Name2; names may use * and ? patterns matched against local source, e.g. ApexClass:EUR_Score*; a bare Type deletes every local component of it (case-insensitive, repeatable)")
 	cmd.Flags().StringVar(&projectDir, "project-dir", "", "sfdx project to delete from (default: search up from cwd)")
 	cmd.Flags().BoolVarP(&checkOnly, "check-only", "c", false, "validate the delete without changing the org or the local project")
 	cmd.Flags().BoolVarP(&noPrompt, "no-prompt", "r", false, "don't ask for confirmation")

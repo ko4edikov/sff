@@ -231,3 +231,24 @@ func TestResolveDeleteCustomLabelEditsFile(t *testing.T) {
 		t.Errorf("wildcard members = %v, want %v", got, want)
 	}
 }
+
+func TestResolveDeleteMetadataGlob(t *testing.T) {
+	proj, _ := deleteFixture(t,
+		"classes/EUR_ScoreA.cls", "classes/EUR_ScoreA.cls-meta.xml",
+		"classes/eur_scoreB.cls", "classes/eur_scoreB.cls-meta.xml",
+		"classes/Other.cls", "classes/Other.cls-meta.xml")
+	pkg := &mdapi.Package{Types: []mdapi.PackageTypes{{Name: "ApexClass", Members: []string{"EUR_Score*", "Zzz*"}}}}
+	plan, err := ResolveDelete(proj, nil, pkg, "62.0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := planMembers(plan), []string{"ApexClass:EUR_ScoreA", "ApexClass:eur_scoreB"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("members = %v, want %v", got, want)
+	}
+	if len(plan.Files) != 4 {
+		t.Errorf("files = %d, want 4", len(plan.Files))
+	}
+	if len(plan.Warnings) != 1 || !strings.Contains(plan.Warnings[0], "Zzz*") {
+		t.Errorf("warnings = %v, want one for Zzz*", plan.Warnings)
+	}
+}
