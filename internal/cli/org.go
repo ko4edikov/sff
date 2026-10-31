@@ -15,7 +15,6 @@ import (
 
 	"github.com/ko4edikov/sff/pkg/auth"
 	"github.com/ko4edikov/sff/pkg/mdapi"
-	"github.com/ko4edikov/sff/pkg/sfapi"
 )
 
 func newOrgCmd() *cobra.Command {
@@ -68,7 +67,7 @@ func newOrgListMetadataTypesCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output JSON")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "ignore the cache and re-fetch from the org")
-	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "Metadata API version")
+	cmd.Flags().StringVar(&apiVersion, "api-version", "", "Metadata API version (default: the org's latest)")
 	addTargetOrgFlag(cmd)
 	return cmd
 }
@@ -78,6 +77,7 @@ func runListMetadataTypes(ctx context.Context, apiVersion string, asJSON, refres
 	if err != nil {
 		return err
 	}
+	apiVersion = resolveAPIVersion(ctx, apiVersion, "-", org)
 	client := newMDClient(org)
 	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
 

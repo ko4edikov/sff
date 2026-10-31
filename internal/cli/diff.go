@@ -56,7 +56,7 @@ func newDiffCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&execTmpl, "exec", "", "diff viewer command template using {remote}/{local}")
-	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "API version")
+	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
 	cmd.Flags().BoolVar(&forceRetrieve, "retrieve", false, "force the Metadata API path for every target")
 	cmd.Flags().StringVar(&ignore, "ignore", "none", "built-in diff whitespace handling: none, trim, whitespace, whitespace-blank")
 	addTargetOrgFlag(cmd)
@@ -73,6 +73,7 @@ func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string, fo
 	if err != nil {
 		return err
 	}
+	apiVersion = resolveAPIVersion(ctx, apiVersion, "", org)
 	client := sfapi.New(org)
 	client.APIVersion = apiVersion
 

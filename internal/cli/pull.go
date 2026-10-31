@@ -15,7 +15,6 @@ import (
 	"github.com/ko4edikov/sff/pkg/mdapi"
 	"github.com/ko4edikov/sff/pkg/progress"
 	"github.com/ko4edikov/sff/pkg/project"
-	"github.com/ko4edikov/sff/pkg/sfapi"
 	"github.com/ko4edikov/sff/pkg/source"
 )
 
@@ -45,7 +44,7 @@ func newPullCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&projectDir, "project-dir", "", "sfdx project to refresh (default: search up from cwd)")
-	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "Metadata API version")
+	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
 	cmd.Flags().BoolVar(&force, "force", false, "proceed even if the git working tree has uncommitted changes")
 	cmd.Flags().StringVar(&ignore, "ignore", "none", "revert whitespace-only diffs after pulling: none, trim, whitespace, whitespace-blank")
 	addTargetOrgFlag(cmd)
@@ -70,6 +69,7 @@ func runPull(ctx context.Context, projectDir, apiVersion string, force bool, ign
 	if err != nil {
 		return err
 	}
+	apiVersion = resolveAPIVersion(ctx, apiVersion, projectDir, org)
 	client := newMDClient(org)
 	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
 	catalog, _, _ := client.DescribeMetadataCached(ctx, false)

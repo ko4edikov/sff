@@ -16,14 +16,13 @@ import (
 	"github.com/ko4edikov/sff/pkg/auth"
 	"github.com/ko4edikov/sff/pkg/mdapi"
 	"github.com/ko4edikov/sff/pkg/project"
-	"github.com/ko4edikov/sff/pkg/sfapi"
 	"github.com/ko4edikov/sff/pkg/source"
 )
 
 func newDeleteCmd() *cobra.Command {
 	var sourceDirs, metadata, tests []string
 	var projectDir, testLevel, apiVersion string
-	var checkOnly, noPrompt, dryRun bool
+	var checkOnly, noPrompt, dryRun, orgOnly bool
 	var wait int
 	cmd := &cobra.Command{
 		Use:   "delete",
@@ -35,17 +34,23 @@ func newDeleteCmd() *cobra.Command {
 			"field); a bundle (lwc/aura), static resource or class always takes all of its\n" +
 			"files with it. Local files are removed only after the org-side delete succeeds.\n" +
 			"Without -r/--no-prompt the components and files are listed and you must confirm.\n" +
-			"Use --check-only to validate the delete without changing the org or the project.",
+			"Use --check-only to validate the delete without changing the org or the project.\n" +
+			"With --org-only, -m components are deleted from the org even when they are not in\n" +
+			"the local project (nothing is read from or removed from disk).",
 		Example: `  sff delete -d force-app/main/default/classes/MyClass.cls
   sff delete -m ApexClass:MyClass -m LWC:myCmp
   sff delete -m CustomField:Account.Legacy__c -r
   sff delete -d force-app/main/default/objects/Account/fields --check-only
   sff delete -m ApexClass:MyClass --dry-run
-  sff delete -m 'ApexClass:EUR_Score*' --dry-run`,
+  sff delete -m 'ApexClass:EUR_Score*' --dry-run
+  sff delete -m ApexClass:NotInProject --org-only`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(sourceDirs) == 0 && len(metadata) == 0 {
 				return fmt.Errorf("specify what to delete with -d or -m")
+			}
+			if orgOnly && len(metadata) == 0 {
+				return fmt.Errorf("--org-only requires -m Type:Name")
 			}
 			level, err := resolveTestLevel(testLevel, tests)
 			if err != nil {
@@ -57,12 +62,13 @@ func newDeleteCmd() *cobra.Command {
 				TestLevel:       level,
 				RunTests:        tests,
 			}
-			return runDelete(cmd.Context(), deleteSelection{sourceDirs: sourceDirs, metadata: metadata, projectDir: projectDir},
+			return runDelete(cmd.Context(), deleteSelection{sourceDirs: sourceDirs, metadata: metadata, projectDir: projectDir, orgOnly: orgOnly},
 				apiVersion, noPrompt, dryRun, time.Duration(wait)*time.Minute, opts)
 		},
 	}
 	cmd.Flags().StringArrayVarP(&sourceDirs, "source-dir", "d", nil, "source file or directory to delete (repeatable)")
 	cmd.Flags().StringArrayVarP(&metadata, "metadata", "m", nil, "metadata to delete as Type:Name or Type:Name1,Name2; names may use * and ? patterns matched against local source, e.g. ApexClass:EUR_Score*; a bare Type deletes every local component of it (case-insensitive, repeatable)")
+	cmd.Flags().BoolVar(&orgOnly, "org-only", false, "delete only from the org: -m names are taken as-is (patterns are expanded via listMetadata) and no local project or files are involved")
 	cmd.Flags().StringVar(&projectDir, "project-dir", "", "sfdx project to delete from (default: search up from cwd)")
 	cmd.Flags().BoolVarP(&checkOnly, "check-only", "c", false, "validate the delete without changing the org or the local project")
 	cmd.Flags().BoolVarP(&noPrompt, "no-prompt", "r", false, "don't ask for confirmation")
@@ -70,8 +76,9 @@ func newDeleteCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&testLevel, "test-level", "l", "", "NoTestRun|RunSpecifiedTests|RunLocalTests|RunAllTestsInOrg")
 	cmd.Flags().StringArrayVar(&tests, "tests", nil, "Apex test class to run (repeatable; requires -l RunSpecifiedTests)")
 	cmd.Flags().IntVarP(&wait, "wait", "w", 0, "minutes to wait for the delete to finish (0 = wait indefinitely)")
-	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "Metadata API version")
+	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
 	cmd.MarkFlagsMutuallyExclusive("source-dir", "metadata")
+	cmd.MarkFlagsMutuallyExclusive("org-only", "source-dir")
 	addTargetOrgFlag(cmd)
 	return cmd
 }
@@ -81,21 +88,26 @@ type deleteSelection struct {
 	sourceDirs []string // -d: files or directories inside the project
 	metadata   []string // -m: Type:Name specifiers
 	projectDir string   // where to find the sfdx project
+	orgOnly    bool     // delete from the org only, no local project involved
 }
 
 func runDelete(ctx context.Context, sel deleteSelection, apiVersion string, noPrompt, dryRun bool, wait time.Duration, opts mdapi.DeployOptions) error {
-	start := sel.projectDir
-	if start == "" {
-		start = "."
-	}
-	proj, err := project.Find(start)
-	if err != nil {
-		return err
+	var proj *project.Project
+	if !sel.orgOnly {
+		start := sel.projectDir
+		if start == "" {
+			start = "."
+		}
+		var err error
+		if proj, err = project.Find(start); err != nil {
+			return err
+		}
 	}
 	org, err := auth.Resolve(targetOrg)
 	if err != nil {
 		return err
 	}
+	apiVersion = resolveAPIVersion(ctx, apiVersion, sel.projectDir, org)
 	client := newMDClient(org)
 	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
 
@@ -108,9 +120,17 @@ func runDelete(ctx context.Context, sel deleteSelection, apiVersion string, noPr
 			return err
 		}
 	}
-	plan, err := source.ResolveDelete(proj, sel.sourceDirs, pkg, client.APIVersion, catalog)
-	if err != nil {
-		return err
+	var plan *source.DeletePlan
+	root := ""
+	if sel.orgOnly {
+		if plan, err = orgOnlyPlan(ctx, client, pkg); err != nil {
+			return err
+		}
+	} else {
+		if plan, err = source.ResolveDelete(proj, sel.sourceDirs, pkg, client.APIVersion, catalog); err != nil {
+			return err
+		}
+		root = proj.Root
 	}
 	for _, w := range plan.Warnings {
 		fmt.Fprintln(os.Stderr, "warning:", w)
@@ -120,7 +140,7 @@ func runDelete(ctx context.Context, sel deleteSelection, apiVersion string, noPr
 	if err != nil {
 		return err
 	}
-	printDeletePlan(os.Stdout, plan, proj.Root)
+	printDeletePlan(os.Stdout, plan, root)
 	if dryRun {
 		fmt.Printf("\n%s", destructive)
 		return nil
@@ -163,11 +183,31 @@ func runDelete(ctx context.Context, sel deleteSelection, apiVersion string, noPr
 		return nil
 	}
 	fmt.Printf("deleted %d component(s) from %s in %s\n", componentCount(plan.Package), org.Username, fmtDuration(time.Since(began)))
+	if sel.orgOnly {
+		return nil
+	}
 	if err := plan.RemoveLocal(); err != nil {
 		return fmt.Errorf("deleted from the org, but removing local files failed: %w", err)
 	}
 	fmt.Printf("removed %d local file(s)\n", len(plan.Files))
 	return nil
+}
+
+// orgOnlyPlan builds a delete plan straight from the -m specifiers: names are
+// used as-is, "Foo*" patterns are expanded against the org, and a bare "*" is
+// refused (a destructive manifest can't carry wildcards).
+func orgOnlyPlan(ctx context.Context, client *mdapi.Client, pkg *mdapi.Package) (*source.DeletePlan, error) {
+	for _, t := range pkg.Types {
+		for _, m := range t.Members {
+			if m == "*" {
+				return nil, fmt.Errorf("%s:* would delete every component of the type; use a narrower pattern", t.Name)
+			}
+		}
+	}
+	if err := client.ExpandGlobs(ctx, pkg); err != nil {
+		return nil, err
+	}
+	return &source.DeletePlan{Package: pkg}, nil
 }
 
 // printDeletePlan lists the components and local files a delete will touch,

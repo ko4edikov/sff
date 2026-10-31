@@ -13,7 +13,6 @@ import (
 	"github.com/ko4edikov/sff/pkg/mdapi"
 	"github.com/ko4edikov/sff/pkg/progress"
 	"github.com/ko4edikov/sff/pkg/project"
-	"github.com/ko4edikov/sff/pkg/sfapi"
 	"github.com/ko4edikov/sff/pkg/source"
 )
 
@@ -54,7 +53,7 @@ func newRetrieveCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&metadataFormat, "metadata-format", false, "unzip raw metadata-format files into -d instead of converting to source")
 	cmd.Flags().StringVarP(&outputDir, "output-dir", "d", "./mdapi", "output directory: converted source tree, or raw files with --metadata-format")
 	cmd.Flags().StringVar(&projectDir, "project-dir", "", "sfdx project to write source into (default: search up from cwd)")
-	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "Metadata API version")
+	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
 	cmd.MarkFlagsMutuallyExclusive("metadata", "manifest")
 	addTargetOrgFlag(cmd)
 	return cmd
@@ -65,6 +64,7 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, so
 	if err != nil {
 		return err
 	}
+	apiVersion = resolveAPIVersion(ctx, apiVersion, projectDir, org)
 
 	client := newMDClient(org)
 	client.APIVersion = strings.TrimPrefix(apiVersion, "v")

@@ -106,7 +106,7 @@ func newDeployCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&ignoreWarnings, "ignore-warnings", false, "succeed even if the deploy reports warnings")
 	cmd.Flags().BoolVar(&ignoreErrors, "ignore-errors", false, "don't roll back on failure; keep components that deployed successfully")
 	cmd.Flags().IntVarP(&wait, "wait", "w", 0, "minutes to wait for the deploy to finish (0 = wait indefinitely)")
-	cmd.Flags().StringVar(&apiVersion, "api-version", sfapi.DefaultAPIVersion, "Metadata API version")
+	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
 	cmd.MarkFlagsMutuallyExclusive("source-dir", "metadata", "manifest")
 	addTargetOrgFlag(cmd)
 	return cmd
@@ -144,6 +144,7 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 	if err != nil {
 		return err
 	}
+	apiVersion = resolveAPIVersion(ctx, apiVersion, sel.projectDir, org)
 	client := newMDClient(org)
 	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
 
@@ -335,6 +336,7 @@ func runToolingDeploy(ctx context.Context, sel deploySelection, apiVersion strin
 	if err != nil {
 		return err
 	}
+	apiVersion = resolveAPIVersion(ctx, apiVersion, sel.projectDir, org)
 	client := sfapi.New(org)
 	if v := strings.TrimPrefix(apiVersion, "v"); v != "" {
 		client.APIVersion = "v" + v

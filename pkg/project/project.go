@@ -20,10 +20,14 @@ type Dir struct {
 type Project struct {
 	Root string
 	Dirs []Dir
+
+	// SourceAPIVersion is sfdx-project.json's sourceApiVersion ("62.0"), or "".
+	SourceAPIVersion string
 }
 
 type config struct {
-	PackageDirectories []Dir `json:"packageDirectories"`
+	PackageDirectories []Dir  `json:"packageDirectories"`
+	SourceAPIVersion   string `json:"sourceApiVersion"`
 }
 
 // Find walks up from start looking for an sfdx-project.json and returns the
@@ -40,7 +44,7 @@ func Find(start string) (*Project, error) {
 			if err := json.Unmarshal(data, &c); err != nil {
 				return nil, fmt.Errorf("parse %s: %w", cfgPath, err)
 			}
-			return &Project{Root: abs, Dirs: c.PackageDirectories}, nil
+			return &Project{Root: abs, Dirs: c.PackageDirectories, SourceAPIVersion: c.SourceAPIVersion}, nil
 		}
 		parent := filepath.Dir(abs)
 		if parent == abs {

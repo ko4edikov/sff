@@ -6,10 +6,13 @@ package sfapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ko4edikov/sff/pkg/auth"
 )
@@ -123,4 +126,39 @@ func apiError(status int, body []byte) error {
 		msg = http.StatusText(status)
 	}
 	return fmt.Errorf("salesforce API error (%d): %s", status, msg)
+}
+
+// LatestAPIVersion returns the highest API version ("v64.0") the org's instance
+// supports, from its public /services/data/ listing (no token needed).
+func LatestAPIVersion(ctx context.Context, org *auth.Org) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(org.InstanceURL, "/")+"/services/data/", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("list API versions: %s", resp.Status)
+	}
+	var versions []struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&versions); err != nil {
+		return "", err
+	}
+	best, bestNum := "", -1.0
+	for _, v := range versions {
+		if n, err := strconv.ParseFloat(v.Version, 64); err == nil && n > bestNum {
+			best, bestNum = v.Version, n
+		}
+	}
+	if best == "" {
+		return "", fmt.Errorf("no API versions listed")
+	}
+	return "v" + best, nil
 }
