@@ -15,6 +15,7 @@ import (
 
 	"github.com/ko4edikov/sff/pkg/auth"
 	"github.com/ko4edikov/sff/pkg/mdapi"
+	"github.com/ko4edikov/sff/pkg/progress"
 	"github.com/ko4edikov/sff/pkg/project"
 	"github.com/ko4edikov/sff/pkg/source"
 )
@@ -204,7 +205,10 @@ func orgOnlyPlan(ctx context.Context, client *mdapi.Client, pkg *mdapi.Package) 
 			}
 		}
 	}
-	if err := client.ExpandGlobs(ctx, pkg); err != nil {
+	prog := progress.Start("expanding patterns via listMetadata")
+	err := client.ExpandGlobs(ctx, pkg)
+	prog.Stop()
+	if err != nil {
 		return nil, err
 	}
 	return &source.DeletePlan{Package: pkg}, nil
