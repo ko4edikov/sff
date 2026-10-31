@@ -45,6 +45,10 @@ irm https://raw.githubusercontent.com/ko4edikov/sff/master/install.ps1 | iex
 [Releases](https://github.com/ko4edikov/sff/releases) page (Windows ships a
 `.zip`), unpack, and put `sff` on your `PATH`.
 
+**Update** — `sff update` downloads the latest release, verifies its checksum and
+replaces the running binary (`--check` only reports, `--version vX.Y.Z` pins a
+release, `--force` reinstalls).
+
 sff reads the credentials already stored by the official `sf` CLI, so once it's
 on your `PATH` it works against every org you've authenticated with `sf`.
 
