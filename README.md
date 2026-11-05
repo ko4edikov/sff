@@ -153,7 +153,9 @@ sff retrieve -m ApexClass:MyClass --metadata-format -d ./mdapi   # raw metadata-
 ```
 
 Notes:
-- A bare `-m ApexClass` retrieves all members (`*`). `Type:Name` retrieves one.
+- A bare `-m ApexClass` retrieves all members (`*`). `Type:Name` retrieves one;
+  names may use `*`/`?` patterns (`-m 'CustomObject:EUR_*'`, expanded via
+  `listMetadata`) and comma lists (`-m permissionset:Admin,Standard`).
 - **Source format** (default): the project is found by searching up from the
   current directory (override with `--project-dir`). Existing files are
   overwritten in place; new ones land under the default package directory's
@@ -199,6 +201,9 @@ sff deploy -d force-app -l RunSpecifiedTests --tests MyTest # run specific Apex 
 sff deploy -d ./mdapi --metadata-format                    # deploy a metadata-format dir as-is
 sff deploy -m ApexClass:MyClass -t                         # fast Tooling-API deploy (--tooling)
 sff deploy -m ApexClass:MyClass --dry-run                  # build & print the manifest, don't deploy
+sff deploy --changed                                       # deploy what changed in git (vs HEAD)
+sff deploy --commit HEAD~1 -c                              # validate one commit's changes
+sff deploy --changed --destructive                         # also delete removed components from the org
 ```
 
 Notes:
@@ -231,6 +236,11 @@ Notes:
   validate-only mode for them). `--metadata-format`, `--ignore-errors`,
   `--ignore-warnings`, and `--test-level`/`--tests` do not apply and are
   rejected.
+- **`--changed` / `--commit <sha>`** deploy straight from git: the working tree
+  vs `HEAD` (staged, unstaged, untracked) or one commit's own changes. Changed
+  files map to narrow components (e.g. one field, not the whole object).
+  Components whose files were all deleted/renamed are only reported unless you add
+  `--destructive`, which removes them from the org in the same deploy.
 - `--check-only` validates without saving; `--test-level` (`NoTestRun`,
   `RunSpecifiedTests` with `--tests`, `RunLocalTests`, `RunAllTestsInOrg`)
   controls Apex tests; `--dry-run` builds the package and prints the manifest
@@ -258,6 +268,8 @@ sff diff force-app/main/default/objects            # every object, one retrieve
 sff diff force-app/main/default                     # the whole project
 sff diff MyClass --retrieve           # force the Metadata API path
 sff diff MyClass -o pr-dev
+sff diff --changed                    # every component changed in git vs HEAD
+sff diff --commit HEAD~1              # components one commit touched
 ```
 
 Each argument may be a file, an lwc/aura bundle, or a **directory**. A directory
@@ -304,6 +316,66 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
   the org, sff prints `✓ <name>: no differences` (to stderr) and exits 0 — exit
   1 means at least one target differs.
 
+## Deleting metadata (`sff delete`)
+
+Deletes components from the org with a destructive Metadata API deploy, then
+removes their source files from the local project (only after the org-side
+delete succeeds). Select with `-d` (files/dirs) or `-m Type:Name`.
+
+```sh
+sff delete -d force-app/main/default/classes/MyClass.cls
+sff delete -m ApexClass:MyClass -m LWC:myCmp
+sff delete -m CustomField:Account.Legacy__c -r        # -r: no confirmation prompt
+sff delete -m 'ApexClass:EUR_Score*' --dry-run        # patterns; list + manifest only
+sff delete -m ApexClass:NotInProject --org-only       # org only, ignore local files
+sff delete -d force-app/main/default/objects/Account/fields --check-only
+```
+
+A single file maps to its narrowest component (a field file deletes just that
+field); bundles, static resources and classes take all their files. Without
+`-r` you confirm the list first. `--check-only` validates without touching the
+org or disk.
+
+## Refreshing the project (`sff pull`)
+
+Re-syncs the whole local project with an org: it snapshots which types/members
+(and folders) your files already track, wipes the package directories, retrieves
+that same scope and writes it back in source format at the same paths — custom
+folder layouts included. Review with `git status`/`git diff`.
+
+```sh
+sff pull -o pr-dev
+sff pull --ignore whitespace-blank     # drop whitespace-only changes from the result
+```
+
+It refuses to run on a dirty git tree unless `--force` is given.
+
+## Apex tests (`sff test`)
+
+Runs Apex tests via the Tooling API and prints per-method results; exits 1 if any
+test fails.
+
+```sh
+sff test -n MyTest                                  # a class
+sff test -n MyTest.testInsert -n OtherTest -c       # methods/classes + code coverage
+sff test -l RunLocalTests --code-coverage           # all local tests
+sff test -n MyTest --json
+```
+
+`-c/--code-coverage` adds line coverage for every class/trigger the tests hit,
+plus the org-wide percentage.
+
+## Manifests from git (`sff manifest`)
+
+Builds `package.xml` and `destructiveChanges.xml` from git changes — offline, no
+org needed. Same selection as `sff deploy --changed/--commit`.
+
+```sh
+sff manifest --changed                  # print to stdout
+sff manifest --commit HEAD --out manifest    # write both files into ./manifest
+sff manifest --changed --json
+```
+
 ## Roadmap
 
 - [x] `pkg/auth` — read `sf` auth files, Keychain decrypt, token refresh
@@ -323,6 +395,11 @@ sff diff MyClass --exec 'code --diff {remote} {local}'   # one-off override
   LWC upserts batch the same way (`allOrNone:false` to keep per-file errors).
   It's the *Tooling* composite, not the standard REST `/composite` (whose
   subrequests are limited to a fixed resource set). Polling stays unchanged.
+- [x] `sff pull` — refresh the whole project from an org
+- [x] `sff delete` — destructive deploy + local source removal (`--org-only`, patterns)
+- [x] `sff test` — Apex tests via the Tooling API, with code coverage
+- [x] `sff manifest` and `deploy`/`diff` `--changed`/`--commit` — git-driven selection
+- [x] `sff update` — self-update from GitHub releases
 - [ ] `sff apex run`, `sff data get/create/update/delete`
 
 ## Use as a library (`pkg/`)
