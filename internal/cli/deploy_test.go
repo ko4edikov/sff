@@ -221,7 +221,7 @@ func TestNewDeployCmd_Validation(t *testing.T) {
 		args    []string
 		wantErr string
 	}{
-		{name: "no selection", args: nil, wantErr: "specify what to deploy with -d, -m, or -x"},
+		{name: "no selection", args: nil, wantErr: "specify what to deploy with -d, -m, -x, --changed, or --commit"},
 		{name: "metadata-format without -d", args: []string{"-m", "ApexClass:Foo", "--metadata-format"}, wantErr: "--metadata-format requires -d"},
 		{name: "mutually exclusive d and m", args: []string{"-d", "force-app", "-m", "ApexClass:Foo"}, wantErr: "if any flags in the group"},
 		{name: "mutually exclusive m and x", args: []string{"-m", "ApexClass:Foo", "-x", "package.xml"}, wantErr: "if any flags in the group"},

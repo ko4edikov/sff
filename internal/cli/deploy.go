@@ -32,7 +32,8 @@ var testLevels = map[string]string{
 func newDeployCmd() *cobra.Command {
 	var sourceDir, manifest, projectDir, testLevel, apiVersion string
 	var metadata, tests []string
-	var checkOnly, dryRun, ignoreWarnings, ignoreErrors, metadataFormat, tooling bool
+	var checkOnly, dryRun, ignoreWarnings, ignoreErrors, metadataFormat, tooling, changed, destructive bool
+	var commit string
 	var wait int
 	cmd := &cobra.Command{
 		Use:   "deploy",
@@ -50,7 +51,11 @@ func newDeployCmd() *cobra.Command {
 			"Use --tooling for a fast deploy via the Tooling API (ApexClass/ApexTrigger/\n" +
 			"ApexPage/ApexComponent and Aura/LWC bundles — which must already exist in the\n" +
 			"org — plus StaticResource) — much quicker than a Metadata API round-trip for the\n" +
-			"daily edit loop.",
+			"daily edit loop.\n" +
+			"Use --changed to deploy what changed in the git working tree vs HEAD (staged,\n" +
+			"unstaged and untracked files), or --commit <sha> for one commit's own changes.\n" +
+			"Changed files map to narrow components; components whose files were all deleted\n" +
+			"(or renamed away) are removed in the same deploy via destructiveChangesPost.xml.",
 		Example: `  sff deploy -d force-app/main/default
   sff deploy -m ApexClass:MyClass -m LWC:myCmp
   sff deploy -m permissionset:Admin,Standard,ReadOnly
@@ -59,11 +64,15 @@ func newDeployCmd() *cobra.Command {
   sff deploy -d ./mdapi --metadata-format
   sff deploy -m ApexClass --dry-run
   sff deploy -d force-app --ignore-errors -w 10
-  sff deploy -m ApexClass:MyClass -t`,
+  sff deploy -m ApexClass:MyClass -t
+  sff deploy --changed
+  sff deploy --changed -o my-sandbox --dry-run
+  sff deploy --changed --destructive
+  sff deploy --commit HEAD~1 -c`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if sourceDir == "" && len(metadata) == 0 && manifest == "" {
-				return fmt.Errorf("specify what to deploy with -d, -m, or -x")
+			if sourceDir == "" && len(metadata) == 0 && manifest == "" && !changed && commit == "" {
+				return fmt.Errorf("specify what to deploy with -d, -m, -x, --changed, or --commit")
 			}
 			if metadataFormat && sourceDir == "" {
 				return fmt.Errorf("--metadata-format requires -d pointing at a metadata-format directory")
@@ -75,7 +84,7 @@ func newDeployCmd() *cobra.Command {
 				if bad := incompatibleWithTooling(metadataFormat, ignoreWarnings, ignoreErrors, testLevel, tests); bad != "" {
 					return fmt.Errorf("--tooling cannot be combined with %s", bad)
 				}
-				sel := deploySelection{sourceDir: sourceDir, metadata: metadata, manifest: manifest, projectDir: projectDir}
+				sel := deploySelection{sourceDir: sourceDir, metadata: metadata, manifest: manifest, projectDir: projectDir, changed: changed, commit: commit, destructive: destructive}
 				return runToolingDeploy(cmd.Context(), sel, apiVersion, checkOnly, dryRun, time.Duration(wait)*time.Minute)
 			}
 			level, err := resolveTestLevel(testLevel, tests)
@@ -89,13 +98,16 @@ func newDeployCmd() *cobra.Command {
 				TestLevel:       level,
 				RunTests:        tests,
 			}
-			sel := deploySelection{sourceDir: sourceDir, metadata: metadata, manifest: manifest, projectDir: projectDir}
+			sel := deploySelection{sourceDir: sourceDir, metadata: metadata, manifest: manifest, projectDir: projectDir, changed: changed, commit: commit, destructive: destructive}
 			return runDeploy(cmd.Context(), sel, apiVersion, dryRun, metadataFormat, time.Duration(wait)*time.Minute, opts)
 		},
 	}
 	cmd.Flags().StringVarP(&sourceDir, "source-dir", "d", "", "source-format directory to deploy")
 	cmd.Flags().StringArrayVarP(&metadata, "metadata", "m", nil, "metadata to deploy as Type, Type:Name or Type:Name1,Name2 (case-insensitive, repeatable)")
 	cmd.Flags().StringVarP(&manifest, "manifest", "x", "", "path to a package.xml listing what to deploy")
+	cmd.Flags().BoolVar(&changed, "changed", false, "deploy what changed in the git working tree vs HEAD (staged, unstaged, untracked); deletions become destructive changes")
+	cmd.Flags().StringVar(&commit, "commit", "", "deploy the changes a git commit introduced (vs its first parent); deletions become destructive changes")
+	cmd.Flags().BoolVar(&destructive, "destructive", false, "with --changed/--commit, also delete from the org the components whose files were deleted or renamed (otherwise they are only reported)")
 	cmd.Flags().StringVar(&projectDir, "project-dir", "", "sfdx project to resolve -m/-x members from (default: search up from cwd)")
 	cmd.Flags().BoolVarP(&checkOnly, "check-only", "c", false, "validate the deploy without saving changes")
 	cmd.Flags().StringVarP(&testLevel, "test-level", "l", "", "NoTestRun|RunSpecifiedTests|RunLocalTests|RunAllTestsInOrg")
@@ -107,17 +119,20 @@ func newDeployCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&ignoreErrors, "ignore-errors", false, "don't roll back on failure; keep components that deployed successfully")
 	cmd.Flags().IntVarP(&wait, "wait", "w", 0, "minutes to wait for the deploy to finish (0 = wait indefinitely)")
 	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
-	cmd.MarkFlagsMutuallyExclusive("source-dir", "metadata", "manifest")
+	cmd.MarkFlagsMutuallyExclusive("source-dir", "metadata", "manifest", "changed", "commit")
 	addTargetOrgFlag(cmd)
 	return cmd
 }
 
 // deploySelection captures the mutually exclusive ways to choose what to deploy.
 type deploySelection struct {
-	sourceDir  string   // -d: a whole source-format directory
-	metadata   []string // -m: Type or Type:Name specifiers
-	manifest   string   // -x: a package.xml path
-	projectDir string   // where to resolve -m/-x members from
+	sourceDir   string   // -d: a whole source-format directory
+	metadata    []string // -m: Type or Type:Name specifiers
+	manifest    string   // -x: a package.xml path
+	projectDir  string   // where to resolve -m/-x members from
+	changed     bool     // --changed: git working tree vs HEAD
+	commit      string   // --commit: one commit's own changes
+	destructive bool     // --destructive: also delete components whose files were removed
 }
 
 // resolveTestLevel canonicalizes the --test-level value and validates --tests usage.
@@ -148,9 +163,28 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 	client := newMDClient(org)
 	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
 
-	entries, pkg, err := buildDeployPackage(ctx, client, sel, metadataFormat)
+	entries, pkg, destroy, err := buildDeployPackage(ctx, client, sel, metadataFormat)
 	if err != nil {
 		return err
+	}
+	if n := componentCount(destroy); n > 0 && !sel.destructive {
+		fmt.Fprintf(os.Stderr, "skipping %d deletion(s) (pass --destructive to delete them from the org):\n", n)
+		for _, t := range destroy.Types {
+			for _, m := range t.Members {
+				fmt.Fprintf(os.Stderr, "  %s:%s\n", t.Name, m)
+			}
+		}
+		destroy = nil
+		if componentCount(pkg) == 0 {
+			return fmt.Errorf("nothing to deploy: the only changes are deletions")
+		}
+	}
+	var destroyXML []byte
+	if destroy != nil && componentCount(destroy) > 0 {
+		if destroyXML, err = destroy.XML(); err != nil {
+			return err
+		}
+		entries["destructiveChangesPost.xml"] = destroyXML
 	}
 
 	pkgXML, ok := entries["package.xml"]
@@ -162,8 +196,11 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 	}
 
 	if dryRun {
-		fmt.Printf("would deploy %d component(s) in %d file(s):\n\n", componentCount(pkg), len(entries)-1)
+		fmt.Printf("would deploy %d component(s) and delete %d:\n\n", componentCount(pkg), componentCount(destroy))
 		fmt.Print(string(pkgXML))
+		if destroyXML != nil {
+			fmt.Printf("\ndestructiveChangesPost.xml:\n%s", destroyXML)
+		}
 		return nil
 	}
 
@@ -228,20 +265,38 @@ func deployWithProgress(ctx context.Context, client *mdapi.Client, org *auth.Org
 // otherwise the selection is recomposed from source format, with the describe
 // catalog driving type/verbatim classification (a catalog failure is non-fatal —
 // recompose falls back to its built-in heuristics).
-func buildDeployPackage(ctx context.Context, client *mdapi.Client, sel deploySelection, metadataFormat bool) (map[string][]byte, *mdapi.Package, error) {
+//
+// The third result is the destructive manifest for --changed/--commit selections
+// (components whose files were all deleted), nil otherwise.
+func buildDeployPackage(ctx context.Context, client *mdapi.Client, sel deploySelection, metadataFormat bool) (map[string][]byte, *mdapi.Package, *mdapi.Package, error) {
 	if metadataFormat {
-		return mdapi.LoadMetadataDir(sel.sourceDir)
+		entries, pkg, err := mdapi.LoadMetadataDir(sel.sourceDir)
+		return entries, pkg, nil, err
 	}
 
 	catalog, _, _ := client.DescribeMetadataCached(ctx, false)
+	if sel.fromGit() {
+		cs, proj, err := resolveGitChanges(sel, client.APIVersion, catalog)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		rec, err := recomposeChangeSet(proj, cs, client.APIVersion, catalog)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		for _, w := range rec.Warnings {
+			fmt.Fprintln(os.Stderr, "warning:", w)
+		}
+		return rec.Entries, rec.Package, cs.Destroy, nil
+	}
 	rec, err := recomposeSelection(sel, client.APIVersion, catalog)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	for _, w := range rec.Warnings {
 		fmt.Fprintln(os.Stderr, "warning:", w)
 	}
-	return rec.Entries, rec.Package, nil
+	return rec.Entries, rec.Package, nil, nil
 }
 
 // recomposeSelection turns the chosen selection into metadata-format entries and
@@ -507,9 +562,22 @@ func recomposeToolingEntries(sel deploySelection, version string) (*source.Recom
 		return source.RecomposeDir(sel.sourceDir, version, nil)
 	}
 
-	pkg, err := mdapi.BuildPackage(sel.manifest, sel.metadata, version, toolingResolver())
-	if err != nil {
-		return nil, err
+	var pkg *mdapi.Package
+	var proj *project.Project
+	if sel.fromGit() {
+		cs, p, err := resolveGitChanges(sel, version, nil)
+		if err != nil {
+			return nil, err
+		}
+		if componentCount(cs.Destroy) > 0 {
+			return nil, fmt.Errorf("--tooling cannot delete components (%d deleted); deploy via the Metadata API instead", componentCount(cs.Destroy))
+		}
+		pkg, proj = cs.Deploy, p
+	} else {
+		var err error
+		if pkg, err = mdapi.BuildPackage(sel.manifest, sel.metadata, version, toolingResolver()); err != nil {
+			return nil, err
+		}
 	}
 	for _, t := range pkg.Types {
 		if !toolingSupported[t.Name] {
@@ -522,13 +590,15 @@ func recomposeToolingEntries(sel deploySelection, version string) (*source.Recom
 		}
 	}
 
-	start := sel.projectDir
-	if start == "" {
-		start = "."
-	}
-	proj, err := project.Find(start)
-	if err != nil {
-		return nil, err
+	if proj == nil {
+		start := sel.projectDir
+		if start == "" {
+			start = "."
+		}
+		var err error
+		if proj, err = project.Find(start); err != nil {
+			return nil, err
+		}
 	}
 	return source.RecomposeMembers(proj, pkg, version, nil)
 }

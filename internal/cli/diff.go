@@ -28,9 +28,10 @@ import (
 
 func newDiffCmd() *cobra.Command {
 	var execTmpl, apiVersion, ignore string
-	var forceRetrieve bool
+	var forceRetrieve, changed bool
+	var commit string
 	cmd := &cobra.Command{
-		Use:   "diff <file|name>...",
+		Use:   "diff [<file|name>...]",
 		Short: "Diff local metadata against the org",
 		Long: "Fetch one or more components' source from the org and compare with the local\n" +
 			"copy. Apex (.cls/.trigger/.page/.component) and LWC/Aura bundles use the fast\n" +
@@ -43,18 +44,45 @@ func newDiffCmd() *cobra.Command {
 			"directory (force-app/main/default).\n\n" +
 			"Viewer: --exec '<tmpl>' takes precedence, then $SFF_DIFF; both use {remote}\n" +
 			"and {local} placeholders. With neither, a unified diff is printed to stdout\n" +
-			"and the exit code is 1 when any target differs.",
+			"and the exit code is 1 when any target differs.\n\n" +
+			"With --changed (git working tree vs HEAD: staged, unstaged, untracked) or\n" +
+			"--commit <sha> (one commit's own changes) and no arguments, the components\n" +
+			"those changes touch are diffed against the org. Components whose files were\n" +
+			"all deleted are skipped.",
 		Example: `  sff diff MyClass
   sff diff MyClass OtherClass lwc/myCmp -o pr-dev
   sff diff force-app/main/default/objects/Account/fields/Foo__c.field-meta.xml
   sff diff force-app/main/default/objects/Account
   SFF_DIFF='idea diff {remote} {local}' sff diff MyClass
-  sff diff MyClass --exec 'code --diff {remote} {local}'`,
-		Args: cobra.MinimumNArgs(1),
+  sff diff MyClass --exec 'code --diff {remote} {local}'
+  sff diff --changed
+  sff diff --commit HEAD~1 --exec 'code --diff {remote} {local}'`,
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if changed || commit != "" {
+				if len(args) > 0 {
+					return fmt.Errorf("--changed/--commit cannot be combined with file or name arguments")
+				}
+				cs, _, err := resolveGitChanges(deploySelection{changed: changed, commit: commit}, "", nil)
+				if err != nil {
+					return err
+				}
+				if n := componentCount(cs.Destroy); n > 0 {
+					fmt.Fprintf(os.Stderr, "skipping %d component(s) deleted locally\n", n)
+				}
+				if len(cs.Paths) == 0 {
+					return fmt.Errorf("nothing to diff: the only changes are deletions")
+				}
+				args = cs.Paths
+			} else if len(args) == 0 {
+				return fmt.Errorf("specify what to diff: a file/name, or --changed / --commit")
+			}
 			return runDiff(cmd.Context(), args, execTmpl, apiVersion, forceRetrieve, ignore)
 		},
 	}
+	cmd.Flags().BoolVar(&changed, "changed", false, "diff the components changed in the git working tree vs HEAD (staged, unstaged, untracked)")
+	cmd.Flags().StringVar(&commit, "commit", "", "diff the components a git commit changed (vs its first parent)")
+	cmd.MarkFlagsMutuallyExclusive("changed", "commit")
 	cmd.Flags().StringVar(&execTmpl, "exec", "", "diff viewer command template using {remote}/{local}")
 	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
 	cmd.Flags().BoolVar(&forceRetrieve, "retrieve", false, "force the Metadata API path for every target")
