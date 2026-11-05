@@ -667,6 +667,9 @@ func printCompileErrors(res *sfapi.ToolingDeployResult) {
 
 // componentCount totals the members across a manifest's types.
 func componentCount(pkg *mdapi.Package) int {
+	if pkg == nil {
+		return 0
+	}
 	n := 0
 	for _, t := range pkg.Types {
 		n += len(t.Members)
