@@ -1,7 +1,9 @@
 package source
 
 import (
+	"encoding/xml"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,6 +16,11 @@ import (
 type ChangedFile struct {
 	Path    string // absolute path
 	Deleted bool   // the file no longer exists
+
+	// Old is the file's content before the change, when known. Only consulted
+	// for CustomLabels.labels-meta.xml, to work out which labels were added,
+	// changed or removed.
+	Old []byte
 }
 
 // ChangeSet is what to push to an org for a set of changed files: the
@@ -50,12 +57,17 @@ func ResolveChanges(proj *project.Project, files []ChangedFile, version string, 
 		o, ok := byDir[folder]
 		return bundleDirs[folder] || (ok && o.Suffix == "") || spec.typ == "StaticResource"
 	}
+	var labelFiles []ChangedFile
 	for _, f := range files {
 		parts := projectRelParts(proj, f.Path, typeDirs)
 		if len(parts) < 2 {
 			continue
 		}
 		spec, ok := classifyDeleteFile(parts, byDir)
+		if !ok && isLabelsFile(parts) {
+			labelFiles = append(labelFiles, f)
+			continue
+		}
 		if !ok {
 			cs.Warnings = append(cs.Warnings, fmt.Sprintf("%s is not a deployable metadata component; skipped", strings.Join(parts, "/")))
 			continue
@@ -78,7 +90,17 @@ func ResolveChanges(proj *project.Project, files []ChangedFile, version string, 
 		}
 	}
 
+	labelsDeploy, labelsDestroy, labelsPath := diffLabels(labelFiles)
+	for _, name := range labelsDeploy {
+		s := deleteSpec{"CustomLabel", name}
+		present[s] = true
+		specPath[s] = labelsPath
+	}
+
 	destroy := map[deleteSpec]bool{}
+	for _, name := range labelsDestroy {
+		destroy[deleteSpec{"CustomLabel", name}] = true
+	}
 	for s := range gone {
 		if present[s] {
 			continue
@@ -138,4 +160,57 @@ func specsToPackage(specs map[deleteSpec]bool, version string) *mdapi.Package {
 		pkg.Types = append(pkg.Types, mdapi.PackageTypes{Name: t, Members: byType[t]})
 	}
 	return pkg
+}
+
+func isLabelsFile(parts []string) bool {
+	return len(parts) == 2 && parts[0] == "labels" && strings.HasPrefix(parts[1], "CustomLabels.labels-meta")
+}
+
+// diffLabels compares the changed CustomLabels files against their previous
+// content and returns the labels to deploy (added or modified) and to destroy
+// (removed), plus a local path for one of the files (for diffing).
+func diffLabels(files []ChangedFile) (deploy, destroy []string, path string) {
+	oldBlocks, newBlocks := map[string]string{}, map[string]string{}
+	for _, f := range files {
+		if f.Old != nil {
+			for k, v := range labelBlocks(f.Old) {
+				oldBlocks[k] = v
+			}
+		}
+		if !f.Deleted {
+			if data, err := os.ReadFile(f.Path); err == nil {
+				for k, v := range labelBlocks(data) {
+					newBlocks[k] = v
+				}
+				path = f.Path
+			}
+		}
+	}
+	for name, block := range newBlocks {
+		if old, ok := oldBlocks[name]; !ok || old != block {
+			deploy = append(deploy, name)
+		}
+	}
+	for name := range oldBlocks {
+		if _, ok := newBlocks[name]; !ok {
+			destroy = append(destroy, name)
+		}
+	}
+	sort.Strings(deploy)
+	sort.Strings(destroy)
+	return deploy, destroy, path
+}
+
+// labelBlocks maps each label's fullName in a CustomLabels document to its raw
+// inner XML (whitespace-trimmed).
+func labelBlocks(data []byte) map[string]string {
+	var doc customLabelsDoc
+	if xml.Unmarshal(data, &doc) != nil {
+		return nil
+	}
+	out := make(map[string]string, len(doc.Labels))
+	for _, l := range doc.Labels {
+		out[l.FullName] = strings.TrimSpace(l.Inner)
+	}
+	return out
 }

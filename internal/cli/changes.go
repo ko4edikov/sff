@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ko4edikov/sff/pkg/gitchange"
 	"github.com/ko4edikov/sff/pkg/mdapi"
@@ -39,7 +40,11 @@ func resolveGitChanges(sel deploySelection, version string, catalog *mdapi.Descr
 	}
 	changed := make([]source.ChangedFile, 0, len(files))
 	for _, f := range files {
-		changed = append(changed, source.ChangedFile{Path: f.Path, Deleted: f.Deleted})
+		cf := source.ChangedFile{Path: f.Path, Deleted: f.Deleted}
+		if strings.HasSuffix(f.Path, "/labels/CustomLabels.labels-meta.xml") {
+			cf.Old, _ = gitchange.ShowOld(proj.Root, sel.commit, f.Path)
+		}
+		changed = append(changed, cf)
 	}
 
 	cs, err := source.ResolveChanges(proj, changed, version, catalog)
