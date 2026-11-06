@@ -572,6 +572,23 @@ func recomposeDecomposed(g *decompGroup) ([]byte, error) {
 	}
 
 	children := orderedChildren(g)
+	if len(g.narrow) > 0 && !g.fullSelected {
+		// Pulled in only to back narrow child selections: ship just those
+		// children. Extra children in the zip but absent from package.xml are
+		// rejected by the API ("Not in package.xml").
+		want := map[string]bool{}
+		for _, nm := range g.narrow {
+			want[nm.typ+":"+nm.member] = true
+		}
+		kept := children[:0:0]
+		for _, cf := range children {
+			name := extractFullName(splitLines(cf.data))
+			if name == "" || want[cf.child.Type+":"+g.name+"."+name] {
+				kept = append(kept, cf)
+			}
+		}
+		children = kept
+	}
 	var childLines []string
 	for _, cf := range children {
 		childLines = append(childLines, childElementLines(cf.data, cf.child)...)

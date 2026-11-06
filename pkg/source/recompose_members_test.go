@@ -194,9 +194,9 @@ func TestRecomposeMembersCustomLabelWildcard(t *testing.T) {
 
 // TestRecomposeMembersCustomField selects a decomposed CustomObject child
 // (CustomField) directly. The Metadata API rejects a lone field file, so the
-// zip must carry the whole composed parent object (including every other
-// local field/child), while the manifest stays narrowed to just the
-// requested field.
+// zip must carry the composed parent object, but only with the requested
+// field (other children would be "Not in package.xml"), and the manifest stays
+// narrowed to just that field.
 func TestRecomposeMembersCustomField(t *testing.T) {
 	proj := writeProject(t, map[string]string{
 		"objects/Account/Account.object-meta.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
@@ -229,9 +229,12 @@ func TestRecomposeMembersCustomField(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing objects/Account.object entry (the composed parent), got %v", entryPaths(rec))
 	}
-	// The whole object is composed, including the field that wasn't requested.
-	if !bytes.Contains(obj, []byte("<fullName>Name__c</fullName>")) || !bytes.Contains(obj, []byte("<fullName>Other__c</fullName>")) {
-		t.Errorf("composed object missing a field:\n%s", obj)
+	// The object is composed with just the requested field.
+	if !bytes.Contains(obj, []byte("<fullName>Name__c</fullName>")) {
+		t.Errorf("composed object missing the requested field:\n%s", obj)
+	}
+	if bytes.Contains(obj, []byte("<fullName>Other__c</fullName>")) {
+		t.Errorf("composed object contains a field that wasn't requested:\n%s", obj)
 	}
 	if _, leaked := rec.Entries["objects/Contact.object"]; leaked {
 		t.Error("Contact leaked in: -m should only pull the requested field's parent object")
