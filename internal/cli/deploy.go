@@ -224,6 +224,7 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 		noun = "validated"
 	}
 	fmt.Printf("%s %d component(s) to %s in %s\n", noun, res.NumberComponentsDeployed, org.Username, fmtDuration(time.Since(start)))
+	printDeploySuccesses(os.Stdout, res.ComponentSuccesses)
 	if res.NumberTestsCompleted > 0 {
 		fmt.Printf("ran %d test(s), %d failed\n", res.NumberTestsCompleted, res.NumberTestErrors)
 	}
@@ -458,6 +459,7 @@ func runToolingDeploy(ctx context.Context, sel deploySelection, apiVersion strin
 		noun = "validated"
 	}
 	fmt.Printf("%s %d component(s) to %s in %s\n", noun, len(res.Succeeded), org.Username, fmtDuration(time.Since(start)))
+	printToolingSuccesses(os.Stdout, res.Succeeded)
 	return nil
 }
 

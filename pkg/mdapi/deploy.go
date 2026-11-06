@@ -38,6 +38,9 @@ type ComponentMessage struct {
 	LineNumber    int    `xml:"lineNumber"`
 	ColumnNumber  int    `xml:"columnNumber"`
 	Success       bool   `xml:"success"`
+	Created       bool   `xml:"created"`
+	Changed       bool   `xml:"changed"`
+	Deleted       bool   `xml:"deleted"`
 }
 
 // TestFailure is one failed Apex test from a deploy that ran tests.
@@ -64,6 +67,7 @@ type DeployResult struct {
 	NumberTestsCompleted     int
 	NumberTestErrors         int
 	ComponentFailures        []ComponentMessage
+	ComponentSuccesses       []ComponentMessage
 	TestFailures             []TestFailure
 }
 
@@ -93,8 +97,9 @@ type deployStatusEnv struct {
 		NumberTestsCompleted     int    `xml:"numberTestsCompleted"`
 		NumberTestErrors         int    `xml:"numberTestErrors"`
 		Details                  struct {
-			ComponentFailures []ComponentMessage `xml:"componentFailures"`
-			RunTestResult     struct {
+			ComponentFailures  []ComponentMessage `xml:"componentFailures"`
+			ComponentSuccesses []ComponentMessage `xml:"componentSuccesses"`
+			RunTestResult      struct {
 				Failures []TestFailure `xml:"failures"`
 			} `xml:"runTestResult"`
 		} `xml:"details"`
@@ -158,6 +163,7 @@ func (c *Client) CheckDeployStatus(ctx context.Context, id string) (done bool, r
 		NumberTestsCompleted:     r.NumberTestsCompleted,
 		NumberTestErrors:         r.NumberTestErrors,
 		ComponentFailures:        r.Details.ComponentFailures,
+		ComponentSuccesses:       r.Details.ComponentSuccesses,
 		TestFailures:             r.Details.RunTestResult.Failures,
 	}
 	return r.Done, out, nil
