@@ -360,6 +360,7 @@ sff test -n MyTest                                  # a class
 sff test -n MyTest.testInsert -n OtherTest -c       # methods/classes + code coverage
 sff test -l RunLocalTests --code-coverage           # all local tests
 sff test -n MyTest --json
+sff test -n 'Account*Test' --dry-run                # * wildcards in class names; --dry-run lists the matches
 ```
 
 `-c/--code-coverage` adds line coverage for every class/trigger the tests hit,

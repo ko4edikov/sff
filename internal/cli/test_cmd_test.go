@@ -30,3 +30,9 @@ func TestBuildTestRequest(t *testing.T) {
 		t.Fatal("expected error for bad level")
 	}
 }
+
+func TestLikePattern(t *testing.T) {
+	if got := likePattern("My*_Te'st*"); got != `My%\_Te\'st%` {
+		t.Fatalf("got %q", got)
+	}
+}
