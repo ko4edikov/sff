@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -132,6 +134,7 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, so
 		if err != nil {
 			return err
 		}
+		printFileList(written, outputDir)
 		fmt.Printf("retrieved %d file(s) to %s (metadata format) in %s\n", len(written), outputDir, fmtDuration(time.Since(start)))
 		return nil
 	}
@@ -147,6 +150,30 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, so
 	if sourceDest != "" {
 		destLabel = sourceDest
 	}
+	printFileList(conv.Paths, "")
 	fmt.Printf("retrieved %d file(s) to %s (source format) in %s\n", len(conv.Written), destLabel, fmtDuration(time.Since(start)))
 	return nil
+}
+
+// printFileList prints the retrieved files, sorted, one per line. Absolute paths
+// are shown relative to the current directory when they sit under it; names
+// already relative (a zip listing) are joined onto base when one is given.
+func printFileList(files []string, base string) {
+	cwd, _ := os.Getwd()
+	out := make([]string, 0, len(files))
+	for _, f := range files {
+		if base != "" && !filepath.IsAbs(f) {
+			f = filepath.Join(base, f)
+		}
+		if filepath.IsAbs(f) && cwd != "" {
+			if rel, err := filepath.Rel(cwd, f); err == nil && !strings.HasPrefix(rel, "..") {
+				f = rel
+			}
+		}
+		out = append(out, f)
+	}
+	sort.Strings(out)
+	for _, f := range out {
+		fmt.Println("  " + f)
+	}
 }

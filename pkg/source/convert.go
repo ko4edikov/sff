@@ -30,7 +30,17 @@ var contentFolders = map[string]bool{
 // ConvertResult reports what a metadata→source conversion produced.
 type ConvertResult struct {
 	Written  []string // source-relative paths written
+	Paths    []string // absolute paths of the same files, parallel to Written
 	Warnings []string // components skipped or needing attention
+}
+
+// writeAt writes data to path and records it in res.Paths.
+func (r *ConvertResult) writeAt(path string, data []byte) error {
+	if err := writeFile(path, data); err != nil {
+		return err
+	}
+	r.Paths = append(r.Paths, path)
+	return nil
 }
 
 // ConvertZipToSource extracts a metadata-format retrieve zip (singlePackage, so
@@ -78,7 +88,7 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 		// or, for archives, expanded into a directory.
 		if folder == "staticresources" {
 			if strings.HasSuffix(name, ".resource-meta.xml") {
-				if err := writeFile(placeInProject(p, dest, name, index), normalizeXML(data)); err != nil {
+				if err := res.writeAt(placeInProject(p, dest, name, index), normalizeXML(data)); err != nil {
 					return res, err
 				}
 				res.Written = append(res.Written, name)
@@ -90,7 +100,7 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 				return res, fmt.Errorf("static resource %s: %w", name, err)
 			}
 			for _, sp := range parts {
-				if err := writeFile(placeInProject(p, dest, sp.rel, index), sp.data); err != nil {
+				if err := res.writeAt(placeInProject(p, dest, sp.rel, index), sp.data); err != nil {
 					return res, err
 				}
 				res.Written = append(res.Written, sp.rel)
@@ -106,7 +116,7 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 				return res, fmt.Errorf("decompose %s: %w", name, err)
 			}
 			for _, sp := range parts {
-				if err := writeFile(placeInProject(p, dest, sp.rel, index), normalizeXML(sp.data)); err != nil {
+				if err := res.writeAt(placeInProject(p, dest, sp.rel, index), normalizeXML(sp.data)); err != nil {
 					return res, err
 				}
 				res.Written = append(res.Written, sp.rel)
@@ -127,7 +137,7 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 		} else {
 			data = normalizeXML(data)
 		}
-		if err := writeFile(placeInProject(p, dest, srcRel, index), data); err != nil {
+		if err := res.writeAt(placeInProject(p, dest, srcRel, index), data); err != nil {
 			return res, err
 		}
 		res.Written = append(res.Written, srcRel)
