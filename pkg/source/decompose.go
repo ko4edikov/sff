@@ -14,6 +14,11 @@ const mdNamespace = "http://soap.sforce.com/2006/04/metadata"
 type splitFile struct {
 	rel  string // source-relative path, e.g. objects/Account/fields/X__c.field-meta.xml
 	data []byte
+	// stub marks a parent file that carries no properties of its own: the
+	// retrieve selected only some children (e.g. just one CustomField), so the
+	// org returned an empty shell. Writing it over an existing full parent file
+	// would wipe that file's contents.
+	stub bool
 }
 
 // decompose splits a composed metadata file (e.g. an .object) into its
@@ -92,7 +97,7 @@ func decompose(data []byte, parentName string, t *DecompType) ([]splitFile, erro
 	b.WriteString(">\n")
 
 	parentRel := path.Join(parentDir, parentName+"."+t.Suffix+"-meta.xml")
-	out := []splitFile{{rel: parentRel, data: []byte(b.String())}}
+	out := []splitFile{{rel: parentRel, data: []byte(b.String()), stub: len(residual) == 0 && len(children) > 0}}
 	return append(out, children...), nil
 }
 

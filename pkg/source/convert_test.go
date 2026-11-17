@@ -73,3 +73,31 @@ func TestConvertZipToSourceNormalizesCRLFInVerbatimContent(t *testing.T) {
 		t.Fatalf("Foo.cls-meta.xml still contains CR bytes: %q", meta)
 	}
 }
+
+func TestDecomposeMarksPropertyLessParentAsStub(t *testing.T) {
+	obj := decompByDir["objects"]
+	onlyField := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fields>
+        <fullName>X__c</fullName>
+        <type>Text</type>
+    </fields>
+</CustomObject>
+`)
+	parts, err := decompose(onlyField, "Acc", obj)
+	if err != nil || len(parts) != 2 || !parts[0].stub {
+		t.Fatalf("child-only retrieve: stub=%v parts=%d err=%v", parts[0].stub, len(parts), err)
+	}
+	withProps := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>Acc</label>
+    <fields>
+        <fullName>X__c</fullName>
+    </fields>
+</CustomObject>
+`)
+	parts, err = decompose(withProps, "Acc", obj)
+	if err != nil || parts[0].stub {
+		t.Fatalf("parent with properties must not be a stub: %v %v", parts[0].stub, err)
+	}
+}

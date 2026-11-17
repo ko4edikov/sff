@@ -116,7 +116,15 @@ func ConvertZipToSource(zipBytes []byte, p *project.Project, catalog *mdapi.Desc
 				return res, fmt.Errorf("decompose %s: %w", name, err)
 			}
 			for _, sp := range parts {
-				if err := res.writeAt(placeInProject(p, dest, sp.rel, index), normalizeXML(sp.data)); err != nil {
+				target := placeInProject(p, dest, sp.rel, index)
+				if sp.stub {
+					// A child-only retrieve returns an empty parent shell; never let
+					// it overwrite an existing, fully populated parent file.
+					if _, err := os.Stat(target); err == nil {
+						continue
+					}
+				}
+				if err := res.writeAt(target, normalizeXML(sp.data)); err != nil {
 					return res, err
 				}
 				res.Written = append(res.Written, sp.rel)
