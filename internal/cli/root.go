@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/ko4edikov/sff/pkg/auth"
 	"github.com/ko4edikov/sff/pkg/mdapi"
+	"github.com/ko4edikov/sff/pkg/sfapi"
 )
 
 // newMDClient builds a Metadata API client and, when SFF_DEBUG is set, wires a
@@ -18,6 +20,14 @@ func newMDClient(org *auth.Org) *mdapi.Client {
 	c := mdapi.New(org)
 	if os.Getenv("SFF_DEBUG") != "" {
 		c.Logger = mdapi.NewWriterLogger(os.Stderr, "[sff:mdapi] ")
+	}
+	// Pattern expansion (Foo*) lists a whole type; SOQL is far faster than
+	// listMetadata for the types sfapi knows. The REST client is built lazily so
+	// it picks up the API version set on c after construction.
+	c.FastList = func(ctx context.Context, typ string, patterns []string) ([]string, bool, error) {
+		sc := sfapi.New(org)
+		sc.APIVersion = "v" + c.APIVersion
+		return sc.FastListNames(ctx, typ, patterns)
 	}
 	return c
 }

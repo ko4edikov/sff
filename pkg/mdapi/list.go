@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // maxListQueries is the Metadata API cap on queries per listMetadata call.
@@ -150,7 +151,8 @@ func (c *Client) ExpandGlobs(ctx context.Context, pkg *Package) error {
 			continue
 		}
 
-		names, err := c.listNames(ctx, t.Name)
+		listStart := time.Now()
+		names, fast, err := c.fastOrListNames(ctx, t)
 		if err != nil {
 			return fmt.Errorf("list %s to expand pattern: %w", t.Name, err)
 		}
@@ -169,12 +171,26 @@ func (c *Client) ExpandGlobs(ctx context.Context, pkg *Package) error {
 				continue
 			}
 			re := globRegexp(m)
-			matched := 0
-			for _, n := range names {
-				if re.MatchString(n) {
-					add(n)
-					matched++
+			matches := func() (n int) {
+				for _, name := range names {
+					if re.MatchString(name) {
+						add(name)
+						n++
+					}
 				}
+				return n
+			}
+			matched := matches()
+			if matched == 0 && fast {
+				// The SOQL listing can miss components it can't name (e.g.
+				// managed objects); confirm with the authoritative listMetadata
+				// before reporting "no match".
+				c.stage("no %s matched %q via SOQL; confirming with listMetadata", t.Name, m)
+				if names, err = c.listNames(ctx, t.Name); err != nil {
+					return fmt.Errorf("list %s to expand pattern: %w", t.Name, err)
+				}
+				fast = false
+				matched = matches()
 			}
 			if matched == 0 {
 				return fmt.Errorf("no %s matches %q in the org", t.Name, m)
@@ -182,6 +198,41 @@ func (c *Client) ExpandGlobs(ctx context.Context, pkg *Package) error {
 		}
 		sort.Strings(expanded)
 		t.Members = expanded
+		c.stage("%s: %d org component(s) listed in %s, %d matched", t.Name, len(names), time.Since(listStart).Round(100*time.Millisecond), len(expanded))
 	}
 	return nil
+}
+
+// stage reports a progress message through OnStage and the debug Logger.
+func (c *Client) stage(format string, a ...any) {
+	msg := fmt.Sprintf(format, a...)
+	c.debugf("%s", msg)
+	if c.OnStage != nil {
+		c.OnStage(msg)
+	}
+}
+
+// fastOrListNames lists a type's components for pattern expansion, preferring
+// the Client's FastList route and falling back to listMetadata when it doesn't
+// cover the type or fails.
+func (c *Client) fastOrListNames(ctx context.Context, t *PackageTypes) (names []string, fast bool, err error) {
+	if c.FastList != nil {
+		var patterns []string
+		for _, m := range t.Members {
+			if IsGlob(m) {
+				patterns = append(patterns, m)
+			}
+		}
+		c.stage("querying %s names via SOQL to expand a pattern", t.Name)
+		names, handled, err := c.FastList(ctx, t.Name, patterns)
+		switch {
+		case handled && err == nil:
+			return names, true, nil
+		case handled:
+			c.debugf("fast list of %s failed (%v); falling back to listMetadata", t.Name, err)
+		}
+	}
+	c.stage("listing all %s components in the org to expand a pattern (slow on large orgs)", t.Name)
+	names, err = c.listNames(ctx, t.Name)
+	return names, false, err
 }

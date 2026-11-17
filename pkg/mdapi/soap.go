@@ -22,6 +22,13 @@ type Client struct {
 	HTTP       *http.Client
 	// Logger, when non-nil, receives verbose SOAP tracing. Nil disables it.
 	Logger Logger
+	// OnStage, when non-nil, is told about long-running prep steps (e.g. listing
+	// a type to expand a pattern) so a caller can show progress. Optional.
+	OnStage func(msg string)
+	// FastList, when non-nil, enumerates a type's components by a faster route
+	// than listMetadata (e.g. SOQL). It returns handled=false for types it
+	// doesn't cover; an error makes ExpandGlobs fall back to listMetadata.
+	FastList func(ctx context.Context, typ string, patterns []string) (names []string, handled bool, err error)
 }
 
 // New returns a Client for org using the default API version.

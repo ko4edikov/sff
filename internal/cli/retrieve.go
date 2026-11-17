@@ -60,19 +60,29 @@ func newRetrieveCmd() *cobra.Command {
 }
 
 func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, sourceDest, projectDir, apiVersion string, metadataFormat bool) error {
+	start := time.Now()
+	// One spinner spans the whole pre-retrieve prep so a slow step (token
+	// refresh, API-version lookup, describe, listMetadata for pattern
+	// expansion) is visible instead of a silent pause.
+	prog := progress.StartAt(start, "resolving org")
+	defer prog.Stop() // idempotent; covers early error returns
+
 	org, err := auth.Resolve(targetOrg)
 	if err != nil {
 		return err
 	}
+	prog.Update("resolving API version (" + org.Username + ")")
 	apiVersion = resolveAPIVersion(ctx, apiVersion, projectDir, org)
 
 	client := newMDClient(org)
 	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
+	client.OnStage = prog.Update
 
 	// The describe catalog powers case-insensitive type resolution below and
 	// content/XML-only classification during conversion later; fetch it once
 	// (cached, best-effort) and reuse. A failure here is non-fatal — type names
 	// fall back to friendly aliases and the converter to its built-in heuristics.
+	prog.Update("loading metadata describe")
 	catalog, _, _ := client.DescribeMetadataCached(ctx, false)
 
 	pkg, err := mdapi.BuildPackage(manifest, metadata, apiVersion, mdapi.NewTypeResolver(catalog))
@@ -97,10 +107,13 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, so
 		}
 	}
 
-	start := time.Now()
-	prog := progress.Start("retrieving")
+	nMembers := 0
+	for _, t := range pkg.Types {
+		nMembers += len(t.Members)
+	}
+	prog.Update(fmt.Sprintf("retrieving %d component(s) in %d type(s) from %s", nMembers, len(pkg.Types), org.Username))
 	res, err := client.RetrieveAndWait(ctx, pkg, func(attempt int) {
-		prog.Update(fmt.Sprintf("retrieving (poll %d)", attempt))
+		prog.Update(fmt.Sprintf("retrieving %d component(s) (poll %d)", nMembers, attempt))
 	})
 	prog.Stop()
 	if err != nil {
