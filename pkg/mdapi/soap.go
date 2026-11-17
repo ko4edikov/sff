@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/ko4edikov/sff/pkg/auth"
 	"github.com/ko4edikov/sff/pkg/sfapi"
@@ -30,26 +29,14 @@ type Client struct {
 	// than listMetadata (e.g. SOQL). It returns handled=false for types it
 	// doesn't cover; an error makes ExpandGlobs fall back to listMetadata.
 	FastList func(ctx context.Context, typ string, patterns []string) (names []string, handled bool, err error)
-
-	tokenMu sync.Mutex // serializes token reads and refreshes across concurrent calls
 }
 
 // token returns the current access token.
-func (c *Client) token() string {
-	c.tokenMu.Lock()
-	defer c.tokenMu.Unlock()
-	return c.Org.AccessToken
-}
+func (c *Client) token() string { return c.Org.Token() }
 
-// refreshIfStale refreshes the org token unless another goroutine already
-// replaced stale since it was used.
+// refreshIfStale refreshes the org token unless it was already replaced.
 func (c *Client) refreshIfStale(ctx context.Context, stale string) error {
-	c.tokenMu.Lock()
-	defer c.tokenMu.Unlock()
-	if c.Org.AccessToken != stale {
-		return nil
-	}
-	return c.Org.Refresh(ctx)
+	return c.Org.RefreshIfStale(ctx, stale)
 }
 
 // New returns a Client for org using the default API version.

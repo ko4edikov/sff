@@ -2,6 +2,7 @@ package source
 
 import (
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -22,17 +23,22 @@ import (
 // scope is always computed the same way its files are placed, regardless of
 // how deep a custom module layout nests them.
 func LocalScope(dirs []string, catalog *mdapi.DescribeResult) []string {
-	byDir := catalogByDir(catalog)
-	typeDirs := knownTypeDirs(catalog)
 	seen := make(map[string]bool)
 	var specs []string
-	add := func(spec string) {
-		if spec != "" && !seen[spec] {
+	walkLocal(dirs, catalog, func(spec, _ string) {
+		if !seen[spec] {
 			seen[spec] = true
 			specs = append(specs, spec)
 		}
-	}
+	})
+	return specs
+}
 
+// walkLocal calls fn with the Type:Name specifier and absolute path of every
+// local file that classifies as a metadata component.
+func walkLocal(dirs []string, catalog *mdapi.DescribeResult, fn func(spec, path string)) {
+	byDir := catalogByDir(catalog)
+	typeDirs := knownTypeDirs(catalog)
 	for _, root := range dirs {
 		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
@@ -42,14 +48,65 @@ func LocalScope(dirs []string, catalog *mdapi.DescribeResult) []string {
 			if rel == "" {
 				return nil
 			}
-			parts := strings.Split(rel, "/")
-			if spec, ok := classifyLocalFile(parts, byDir); ok {
-				add(spec)
+			if spec, ok := classifyLocalFile(strings.Split(rel, "/"), byDir); ok && spec != "" {
+				fn(spec, p)
 			}
 			return nil
 		})
 	}
-	return specs
+}
+
+// LocalIndex locates the local files of org components.
+type LocalIndex struct {
+	files map[string][]string // Type:Name -> absolute file paths
+}
+
+// BuildLocalIndex scans dirs once so components can be looked up by Find.
+func BuildLocalIndex(dirs []string, catalog *mdapi.DescribeResult) *LocalIndex {
+	idx := &LocalIndex{files: map[string][]string{}}
+	walkLocal(dirs, catalog, func(spec, p string) { idx.files[spec] = append(idx.files[spec], p) })
+	return idx
+}
+
+// Find returns the local path to diff or open for the org component typ:name:
+// the exact file for a decomposed child (a CustomField, a ValidationRule, …), the
+// component's directory for a decomposed parent or a bundle with several files,
+// and the file itself otherwise. ok is false when the project doesn't track it.
+func (l *LocalIndex) Find(typ, name string) (string, bool) {
+	// Decomposed child ("CustomField", "Account.X__c") -> its own file.
+	for _, parent := range decompByDir {
+		for _, c := range parent.Children {
+			if c.Type != typ {
+				continue
+			}
+			pname, cname, found := strings.Cut(name, ".")
+			if !found {
+				continue
+			}
+			for _, f := range l.files[parent.Name+":"+pname] {
+				if filepath.Base(f) == pname+"."+parent.Suffix+"-meta.xml" {
+					child := filepath.Join(filepath.Dir(f), c.XMLTag, cname+"."+c.Suffix+"-meta.xml")
+					if _, err := os.Stat(child); err == nil {
+						return child, true
+					}
+				}
+			}
+		}
+	}
+	files := l.files[typ+":"+name]
+	switch len(files) {
+	case 0:
+		return "", false
+	case 1:
+		return files[0], true
+	}
+	dir := filepath.Dir(files[0])
+	for _, f := range files[1:] {
+		for !strings.HasPrefix(f, dir+string(filepath.Separator)) {
+			dir = filepath.Dir(dir)
+		}
+	}
+	return dir, true
 }
 
 // classifyLocalFile turns a type-relative path (parts[0] is the type
@@ -111,4 +168,39 @@ func memberStem(name string) string {
 		name = name[:i]
 	}
 	return name
+}
+
+// ScopeWithChildren extends Type:Name specifiers (as LocalScope returns them)
+// with the child components of every decomposed parent: "CustomObject:Account"
+// adds "CustomField:Account.*", "ValidationRule:Account.*", and so on; a bare
+// singleton such as "CustomLabels" adds "CustomLabel:*". The org tracks and lists
+// those children as components of their own, so a scope made only of parents
+// would never match a change to a single field.
+func ScopeWithChildren(specs []string) []string {
+	children := map[string][]string{} // parent type -> child types
+	for _, t := range decompByDir {
+		for _, c := range t.Children {
+			children[t.Name] = append(children[t.Name], c.Type)
+		}
+	}
+	out := append([]string(nil), specs...)
+	seen := map[string]bool{}
+	for _, s := range specs {
+		seen[s] = true
+	}
+	for _, s := range specs {
+		typ, name, hasName := strings.Cut(s, ":")
+		member := "*"
+		if hasName {
+			member = name + ".*"
+		}
+		for _, child := range children[typ] {
+			spec := child + ":" + member
+			if !seen[spec] {
+				seen[spec] = true
+				out = append(out, spec)
+			}
+		}
+	}
+	return out
 }

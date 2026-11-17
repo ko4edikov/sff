@@ -21,6 +21,7 @@ import (
 func newPullCmd() *cobra.Command {
 	var projectDir, apiVersion, ignore string
 	var force bool
+	var filter modFilter
 	cmd := &cobra.Command{
 		Use:   "pull",
 		Short: "Refresh the whole local project from an org",
@@ -33,25 +34,33 @@ func newPullCmd() *cobra.Command {
 			"indistinguishable from the refresh) unless --force is passed.\n\n" +
 			"--ignore reverts any retrieved file back to its committed version when the only\n" +
 			"difference is whitespace/blank lines (same semantics as `sff diff --ignore`), so\n" +
-			"those files don't show up in `git status` at all.",
+			"those files don't show up in `git status` at all.\n\n" +
+			"--since/--until/--modified-by make the pull incremental: nothing is wiped, and\n" +
+			"only the tracked components that changed in the org (in that window / by that\n" +
+			"user) are retrieved and overwritten in place. Components deleted in the org are\n" +
+			"not removed locally. -e drops types or names from that selection.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mode, err := parseIgnore(ignore)
 			if err != nil {
 				return err
 			}
-			return runPull(cmd.Context(), projectDir, apiVersion, force, mode)
+			if len(filter.exclude) > 0 && !filter.hasChangeFilter() {
+				return fmt.Errorf("--exclude-metadata needs --since/--until/--modified-by (an incremental pull)")
+			}
+			return runPull(cmd.Context(), projectDir, apiVersion, force, mode, &filter)
 		},
 	}
 	cmd.Flags().StringVar(&projectDir, "project-dir", "", "sfdx project to refresh (default: search up from cwd)")
 	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
 	cmd.Flags().BoolVar(&force, "force", false, "proceed even if the git working tree has uncommitted changes")
 	cmd.Flags().StringVar(&ignore, "ignore", "none", "revert whitespace-only diffs after pulling: none, trim, whitespace, whitespace-blank")
+	addModFilterFlags(cmd, &filter)
 	addTargetOrgFlag(cmd)
 	return cmd
 }
 
-func runPull(ctx context.Context, projectDir, apiVersion string, force bool, ignore ignoreMode) error {
+func runPull(ctx context.Context, projectDir, apiVersion string, force bool, ignore ignoreMode, filter *modFilter) error {
 	start := projectDir
 	if start == "" {
 		start = "."
@@ -82,19 +91,44 @@ func runPull(ctx context.Context, projectDir, apiVersion string, force bool, ign
 	}
 	fmt.Printf("scanned local scope: %d metadata component(s)\n", len(specs))
 
-	for _, d := range dirs {
-		fmt.Printf("cleaning directory %s\n", d)
-		if err := os.RemoveAll(d); err != nil {
-			return fmt.Errorf("clear %s: %w", d, err)
-		}
-		if err := os.MkdirAll(d, 0o755); err != nil {
+	var pkg *mdapi.Package
+	if filter.hasChangeFilter() {
+		// Incremental: keep the tree, retrieve only what changed in the org.
+		scope, err := mdapi.BuildPackage("", source.ScopeWithChildren(specs), apiVersion, mdapi.NewTypeResolver(catalog))
+		if err != nil {
 			return err
 		}
-	}
-
-	pkg, err := mdapi.BuildPackage("", specs, apiVersion, mdapi.NewTypeResolver(catalog))
-	if err != nil {
-		return err
+		prog := progress.Start("resolving changes")
+		client.OnStage = prog.Update
+		sel, err := resolveModified(ctx, org, client, catalog, scope, filter, apiVersion, prog.Update)
+		prog.Stop()
+		if err != nil {
+			return err
+		}
+		if len(sel.Entries) == 0 {
+			fmt.Printf("nothing changed in the org for the tracked scope (checked via %s)\n", sel.Source)
+			return nil
+		}
+		fmt.Printf("incremental pull: %d changed component(s) (via %s)\n", len(sel.Entries), sel.Source)
+		pkg = packageFromEntries(sel.Entries, apiVersion)
+		specs = specs[:0]
+		for _, e := range sel.Entries {
+			specs = append(specs, e.Type+":"+e.Name)
+		}
+	} else {
+		for _, d := range dirs {
+			fmt.Printf("cleaning directory %s\n", d)
+			if err := os.RemoveAll(d); err != nil {
+				return fmt.Errorf("clear %s: %w", d, err)
+			}
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				return err
+			}
+		}
+		pkg, err = mdapi.BuildPackage("", specs, apiVersion, mdapi.NewTypeResolver(catalog))
+		if err != nil {
+			return err
+		}
 	}
 	fmt.Printf("retrieving metadata types: %s\n", strings.Join(packageTypeNames(pkg), ", "))
 

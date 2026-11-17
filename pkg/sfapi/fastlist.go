@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 )
 
 // listSource describes how to enumerate one metadata type with a single SOQL
@@ -111,13 +112,27 @@ func withNamespace(ns, name string) string {
 	return ns + "__" + name
 }
 
-// listCustomFields enumerates "Object.Field__c" members. Tooling's CustomField
-// keys the owner by TableEnumOrId (an object API name for standard objects, a
-// 01I… Id for custom ones), so custom-object Ids are resolved in a second query.
-// The field-name part of each pattern narrows the query server-side.
+// listCustomFields enumerates "Object.Field__c" member names. The field-name
+// part of each pattern narrows the query server-side.
 func (c *Client) listCustomFields(ctx context.Context, patterns []string) ([]string, error) {
-	soql := "SELECT TableEnumOrId, DeveloperName, NamespacePrefix FROM CustomField"
-	if where := customFieldWhere(patterns); where != "" {
+	entries, err := c.customFields(ctx, customFieldWhere(patterns))
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name
+	}
+	return names, nil
+}
+
+// customFields queries Tooling CustomField (optionally filtered by a SOQL
+// condition) and returns "Object.Field__c" entries. Tooling keys the owner by
+// TableEnumOrId (an object API name for standard objects, a 01I… Id for custom
+// ones), so custom-object Ids are resolved through EntityDefinition.
+func (c *Client) customFields(ctx context.Context, where string) ([]FastEntry, error) {
+	soql := "SELECT TableEnumOrId, DeveloperName, NamespacePrefix, LastModifiedDate, LastModifiedById FROM CustomField"
+	if where != "" {
 		soql += " WHERE " + where
 	}
 	fields, _, err := c.QueryTooling(ctx, soql)
@@ -143,7 +158,7 @@ func (c *Client) listCustomFields(ctx context.Context, patterns []string) ([]str
 			objName[id[:15]] = api
 		}
 	}
-	names := make([]string, 0, len(fields))
+	out := make([]FastEntry, 0, len(fields))
 	for _, f := range fields {
 		table := Field(f, "TableEnumOrId")
 		if table != "" && table[0] >= '0' && table[0] <= '9' { // an Id, not a standard object name
@@ -156,9 +171,15 @@ func (c *Client) listCustomFields(ctx context.Context, patterns []string) ([]str
 			}
 			table = n
 		}
-		names = append(names, table+"."+withNamespace(Field(f, "NamespacePrefix"), Field(f, "DeveloperName"))+"__c")
+		ns := Field(f, "NamespacePrefix")
+		out = append(out, FastEntry{
+			Name:      table + "." + withNamespace(ns, Field(f, "DeveloperName")) + "__c",
+			ChangedBy: Field(f, "LastModifiedById"),
+			Modified:  parseSFTime(Field(f, "LastModifiedDate")),
+			Managed:   ns != "",
+		})
 	}
-	return names, nil
+	return out, nil
 }
 
 // isObjectName reports whether an API name ends in a custom-object suffix (as
@@ -214,4 +235,103 @@ func (c *Client) listCustomObjects(ctx context.Context) ([]string, error) {
 		}
 	}
 	return names, nil
+}
+
+// FastQuery narrows FastListEntries server-side. Zero values mean "any".
+type FastQuery struct {
+	Since, Until time.Time
+	UserIDs      []string // last modifier
+}
+
+// FastEntry is one component found by SOQL, with its last-modification details.
+type FastEntry struct {
+	Name      string
+	ChangedBy string // user Id
+	Modified  time.Time
+	Managed   bool // belongs to a namespace (an installed package)
+}
+
+// where renders the query as SOQL conditions on LastModifiedDate/LastModifiedById.
+func (q FastQuery) where() []string {
+	var w []string
+	if !q.Since.IsZero() {
+		w = append(w, "LastModifiedDate >= "+SOQLTime(q.Since))
+	}
+	if !q.Until.IsZero() {
+		w = append(w, "LastModifiedDate <= "+SOQLTime(q.Until))
+	}
+	if len(q.UserIDs) > 0 {
+		var ids []string // match both 15- and 18-char forms
+		for _, id := range q.UserIDs {
+			ids = append(ids, id)
+			if len(id) > 15 {
+				ids = append(ids, id[:15])
+			}
+		}
+		w = append(w, "LastModifiedById IN ("+quoteList(ids)+")")
+	}
+	return w
+}
+
+// FastListEntries is FastListNames with modification details and a server-side
+// time/author filter. handled is false for types without a SOQL route (the
+// caller falls back to listMetadata); CustomObject is deliberately left to
+// listMetadata (quick, and it includes the standard objects SOQL can't name).
+func (c *Client) FastListEntries(ctx context.Context, typ string, q FastQuery) ([]FastEntry, bool, error) {
+	conds := q.where()
+	if typ == "CustomField" {
+		entries, err := c.customFields(ctx, strings.Join(conds, " AND "))
+		return entries, true, err
+	}
+	src, ok := listSources[typ]
+	if !ok {
+		return nil, false, nil
+	}
+	cols := []string{src.nameCol, "LastModifiedDate", "LastModifiedById"}
+	if src.nsCol != "" {
+		cols = append(cols, src.nsCol)
+	}
+	if src.parent != "" {
+		cols = append(cols, src.parent)
+	}
+	soql := "SELECT " + strings.Join(cols, ", ") + " FROM " + src.object
+	if len(conds) > 0 {
+		soql += " WHERE " + strings.Join(conds, " AND ")
+	}
+	var recs []json.RawMessage
+	var err error
+	if src.tooling {
+		recs, _, err = c.QueryTooling(ctx, soql)
+	} else {
+		recs, _, err = c.Query(ctx, soql)
+	}
+	if err != nil {
+		return nil, true, err
+	}
+	out := make([]FastEntry, 0, len(recs))
+	for _, r := range recs {
+		name := Field(r, src.nameCol)
+		if name == "" {
+			continue
+		}
+		ns := ""
+		if src.nsCol != "" {
+			ns = Field(r, src.nsCol)
+			name = withNamespace(ns, name)
+		}
+		if src.parent != "" {
+			name = fieldPath(r, src.parent) + "." + name
+		}
+		out = append(out, FastEntry{
+			Name: name, ChangedBy: Field(r, "LastModifiedById"),
+			Modified: parseSFTime(Field(r, "LastModifiedDate")), Managed: ns != "",
+		})
+	}
+	return out, true, nil
+}
+
+// parseSFTime parses SOQL datetimes ("2026-11-17T18:42:00.000+0000").
+func parseSFTime(s string) time.Time {
+	t, _ := time.Parse("2006-01-02T15:04:05.000-0700", s)
+	return t
 }

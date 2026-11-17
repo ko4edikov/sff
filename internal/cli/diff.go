@@ -30,6 +30,7 @@ func newDiffCmd() *cobra.Command {
 	var execTmpl, apiVersion, ignore string
 	var forceRetrieve, changed bool
 	var commit string
+	var filter modFilter
 	cmd := &cobra.Command{
 		Use:   "diff [<file|name>...]",
 		Short: "Diff local metadata against the org",
@@ -48,7 +49,10 @@ func newDiffCmd() *cobra.Command {
 			"With --changed (git working tree vs HEAD: staged, unstaged, untracked) or\n" +
 			"--commit <sha> (one commit's own changes) and no arguments, the components\n" +
 			"those changes touch are diffed against the org. Components whose files were\n" +
-			"all deleted are skipped.",
+			"all deleted are skipped.\n\n" +
+			"With --since/--until/--modified-by (and no arguments) the tracked components\n" +
+			"that changed in the org in that window or by that user are diffed against the\n" +
+			"local copy — i.e. what someone changed in the org that you may not have yet.",
 		Example: `  sff diff MyClass
   sff diff MyClass OtherClass lwc/myCmp -o pr-dev
   sff diff force-app/main/default/objects/Account/fields/Foo__c.field-meta.xml
@@ -56,10 +60,23 @@ func newDiffCmd() *cobra.Command {
   SFF_DIFF='idea diff {remote} {local}' sff diff MyClass
   sff diff MyClass --exec 'code --diff {remote} {local}'
   sff diff --changed
-  sff diff --commit HEAD~1 --exec 'code --diff {remote} {local}'`,
+  sff diff --commit HEAD~1 --exec 'code --diff {remote} {local}'
+  sff diff --since 2d --modified-by "Jane*" -o pr-dev`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if changed || commit != "" {
+			if filter.hasChangeFilter() {
+				if len(args) > 0 || changed || commit != "" {
+					return fmt.Errorf("--since/--until/--modified-by cannot be combined with file arguments, --changed or --commit")
+				}
+				paths, err := resolveOrgChangedPaths(cmd.Context(), &filter, apiVersion)
+				if err != nil {
+					return err
+				}
+				if len(paths) == 0 {
+					return nil
+				}
+				args = paths
+			} else if changed || commit != "" {
 				if len(args) > 0 {
 					return fmt.Errorf("--changed/--commit cannot be combined with file or name arguments")
 				}
@@ -75,7 +92,7 @@ func newDiffCmd() *cobra.Command {
 				}
 				args = cs.Paths
 			} else if len(args) == 0 {
-				return fmt.Errorf("specify what to diff: a file/name, or --changed / --commit")
+				return fmt.Errorf("specify what to diff: a file/name, --changed / --commit, or --since / --modified-by")
 			}
 			return runDiff(cmd.Context(), args, execTmpl, apiVersion, forceRetrieve, ignore)
 		},
@@ -87,8 +104,66 @@ func newDiffCmd() *cobra.Command {
 	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
 	cmd.Flags().BoolVar(&forceRetrieve, "retrieve", false, "force the Metadata API path for every target")
 	cmd.Flags().StringVar(&ignore, "ignore", "none", "built-in diff whitespace handling: none, trim, whitespace, whitespace-blank")
+	addModFilterFlags(cmd, &filter)
 	addTargetOrgFlag(cmd)
 	return cmd
+}
+
+// resolveOrgChangedPaths finds the tracked local components that changed in the
+// org per the filters and returns the local paths to diff (an exact file for a
+// decomposed child, a directory for a parent or multi-file bundle).
+func resolveOrgChangedPaths(ctx context.Context, filter *modFilter, apiVersion string) ([]string, error) {
+	proj, err := project.Find(".")
+	if err != nil {
+		return nil, err
+	}
+	org, err := auth.Resolve(targetOrg)
+	if err != nil {
+		return nil, err
+	}
+	apiVersion = resolveAPIVersion(ctx, apiVersion, "", org)
+	client := newMDClient(org)
+	client.APIVersion = strings.TrimPrefix(apiVersion, "v")
+	prog := progress.Start("resolving changes")
+	defer prog.Stop()
+	client.OnStage = prog.Update
+	catalog, _, _ := client.DescribeMetadataCached(ctx, false)
+
+	dirs := proj.AbsDirs()
+	specs := source.LocalScope(dirs, catalog)
+	if len(specs) == 0 {
+		return nil, fmt.Errorf("no local metadata found under %v; nothing to diff", dirs)
+	}
+	scope, err := mdapi.BuildPackage("", source.ScopeWithChildren(specs), apiVersion, mdapi.NewTypeResolver(catalog))
+	if err != nil {
+		return nil, err
+	}
+	sel, err := resolveModified(ctx, org, client, catalog, scope, filter, apiVersion, prog.Update)
+	if err != nil {
+		return nil, err
+	}
+	prog.Stop()
+	reportHidden(os.Stderr, sel.Hidden)
+	reportSkipped(os.Stderr, sel.Skipped)
+
+	idx := source.BuildLocalIndex(dirs, catalog)
+	seen := map[string]bool{}
+	var paths []string
+	for _, e := range sel.Entries {
+		p, ok := idx.Find(e.Type, e.Name)
+		if !ok || seen[p] {
+			continue
+		}
+		seen[p] = true
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	if len(paths) == 0 {
+		fmt.Fprintf(os.Stderr, "no tracked component changed in the org (checked via %s)\n", sel.Source)
+		return nil, nil
+	}
+	fmt.Fprintf(os.Stderr, "diffing %d changed component(s) (via %s)\n", len(paths), sel.Source)
+	return paths, nil
 }
 
 func runDiff(ctx context.Context, args []string, execTmpl, apiVersion string, forceRetrieve bool, ignoreFlag string) error {

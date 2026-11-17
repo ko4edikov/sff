@@ -9,10 +9,15 @@
 // and ~/.sfdx/alias.json.
 package auth
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"sync"
+)
 
 // Org holds a single org's credentials with tokens already decrypted in memory.
 type Org struct {
+	tokenMu      sync.Mutex // guards AccessToken for concurrent callers (see Token, RefreshIfStale)
 	Username     string
 	Alias        string
 	OrgID        string
@@ -62,4 +67,23 @@ func Resolve(target string) (*Org, error) {
 		RefreshToken: refresh,
 		IsSandbox:    raw.IsSandbox,
 	}, nil
+}
+
+// Token returns the current access token. Safe for concurrent use.
+func (o *Org) Token() string {
+	o.tokenMu.Lock()
+	defer o.tokenMu.Unlock()
+	return o.AccessToken
+}
+
+// RefreshIfStale refreshes the access token unless another goroutine already
+// replaced stale (the token the failed request used), so concurrent requests
+// that all hit an expired token trigger a single refresh.
+func (o *Org) RefreshIfStale(ctx context.Context, stale string) error {
+	o.tokenMu.Lock()
+	defer o.tokenMu.Unlock()
+	if o.AccessToken != stale {
+		return nil
+	}
+	return o.Refresh(ctx)
 }

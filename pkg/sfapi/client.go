@@ -50,6 +50,7 @@ func New(org *auth.Org) *Client {
 // (e.g. "/services/data/v60.0/query/?q=..."). On a 401 it refreshes the token
 // once and retries. The caller owns closing the returned body.
 func (c *Client) do(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	used := c.Org.Token()
 	resp, err := c.send(ctx, method, path, body)
 	if err != nil {
 		return nil, err
@@ -65,7 +66,7 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader) (*
 		// doRetryable instead. Guard against silently re-sending an empty body.
 		return nil, fmt.Errorf("got 401 and request body is not replayable")
 	}
-	if rerr := c.Org.Refresh(ctx); rerr != nil {
+	if rerr := c.Org.RefreshIfStale(ctx, used); rerr != nil {
 		return nil, fmt.Errorf("token refresh after 401: %w", rerr)
 	}
 	return c.send(ctx, method, path, nil)
@@ -84,13 +85,14 @@ func (c *Client) requestJSON(ctx context.Context, method, path string, body []by
 		return c.send(ctx, method, path, r)
 	}
 
+	used := c.Org.Token()
 	resp, err := send()
 	if err != nil {
 		return 0, nil, err
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		resp.Body.Close()
-		if rerr := c.Org.Refresh(ctx); rerr != nil {
+		if rerr := c.Org.RefreshIfStale(ctx, used); rerr != nil {
 			return 0, nil, fmt.Errorf("token refresh after 401: %w", rerr)
 		}
 		if resp, err = send(); err != nil {
@@ -111,7 +113,7 @@ func (c *Client) send(ctx context.Context, method, path string, body io.Reader) 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Org.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+c.Org.Token())
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

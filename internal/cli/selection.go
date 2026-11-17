@@ -97,6 +97,7 @@ type modEntry struct {
 	Name       string    `json:"name"`
 	ModifiedBy string    `json:"modifiedBy,omitempty"`
 	Modified   time.Time `json:"modified,omitempty"`
+	byID       string    // modifier's user Id when only the Id is known
 }
 
 type modSelection struct {
@@ -191,7 +192,26 @@ func resolveModified(ctx context.Context, org *auth.Org, client *mdapi.Client, c
 
 	// Start the slow, large types first so they overlap with everything else.
 	types = heavyFirst(types)
-	results := listTypesConcurrently(ctx, client, types, 6, func(done int, running []string) {
+	// Types with a SOQL route are filtered server-side (one fast query);
+	// everything else goes through listMetadata.
+	fastQ := sfapi.FastQuery{Since: since, Until: until, UserIDs: userIDs}
+	useFast := os.Getenv("SFF_NO_FASTLIST") == ""
+	list := func(typ string) ([]mdapi.FileProperties, error) {
+		if useFast {
+			if es, handled, err := sc.FastListEntries(ctx, typ, fastQ); handled && err == nil {
+				props := make([]mdapi.FileProperties, len(es))
+				for i, e := range es {
+					props[i] = mdapi.FileProperties{FullName: e.Name, LastModifiedByID: e.ChangedBy, LastModifiedDate: e.Modified.UTC().Format(time.RFC3339)}
+					if e.Managed {
+						props[i].ManageableState = "installed"
+					}
+				}
+				return props, nil
+			}
+		}
+		return client.ListTypeProps(ctx, typ)
+	}
+	results := listTypesConcurrently(list, types, 6, func(done int, running []string) {
 		stage(fmt.Sprintf("listMetadata: %d/%d types done; in flight: %s", done, len(types), strings.Join(running, ", ")))
 	})
 	var entries []modEntry
@@ -222,9 +242,14 @@ func resolveModified(ctx context.Context, org *auth.Org, client *mdapi.Client, c
 			if len(userIDs) > 0 && userByID[id15(p.LastModifiedByID)] == "" {
 				continue
 			}
-			entries = append(entries, modEntry{Type: typ, Name: p.FullName, ModifiedBy: p.LastModifiedByName, Modified: mod})
+			name := p.LastModifiedByName
+			if name == "" {
+				name = userByID[id15(p.LastModifiedByID)]
+			}
+			entries = append(entries, modEntry{Type: typ, Name: p.FullName, ModifiedBy: name, Modified: mod, byID: p.LastModifiedByID})
 		}
 	}
+	fillUserNames(ctx, sc, entries)
 	sortEntries(entries)
 	sel := finalizeSelection(entries, "listMetadata", scope, excl, f)
 	sel.Skipped = skipped
@@ -239,7 +264,7 @@ type listResult struct {
 // listTypesConcurrently lists every type with up to workers calls in flight and
 // returns the results in types order. onDone is called (from worker goroutines)
 // after each type finishes.
-func listTypesConcurrently(ctx context.Context, client *mdapi.Client, types []string, workers int, onDone func(done int, running []string)) []listResult {
+func listTypesConcurrently(list func(typ string) ([]mdapi.FileProperties, error), types []string, workers int, onDone func(done int, running []string)) []listResult {
 	results := make([]listResult, len(types))
 	jobs := make(chan int)
 	var wg sync.WaitGroup
@@ -254,7 +279,7 @@ func listTypesConcurrently(ctx context.Context, client *mdapi.Client, types []st
 				mu.Lock()
 				running[types[i]] = true
 				mu.Unlock()
-				props, err := client.ListTypeProps(ctx, types[i])
+				props, err := list(types[i])
 				results[i] = listResult{props, err}
 				mu.Lock()
 				done++
@@ -303,6 +328,33 @@ func heavyFirst(types []string) []string {
 		}
 	})
 	return out
+}
+
+// fillUserNames resolves display names for entries that only carry a user Id
+// (rows found via SOQL), in one batched query.
+func fillUserNames(ctx context.Context, sc *sfapi.Client, entries []modEntry) {
+	var ids []string
+	for _, e := range entries {
+		if e.ModifiedBy == "" && e.byID != "" {
+			ids = append(ids, e.byID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	names, err := sc.UserNames(ctx, ids)
+	if err != nil {
+		return
+	}
+	byID15 := map[string]string{}
+	for id, n := range names {
+		byID15[id15(id)] = n
+	}
+	for i := range entries {
+		if entries[i].ModifiedBy == "" {
+			entries[i].ModifiedBy = byID15[id15(entries[i].byID)]
+		}
+	}
 }
 
 // listableTypes returns every type name the catalog describes (parents and
