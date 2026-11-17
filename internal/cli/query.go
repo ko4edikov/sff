@@ -157,7 +157,8 @@ func writeJSON(w io.Writer, records []json.RawMessage, total int) error {
 	return enc.Encode(out)
 }
 
-// writeCSV writes records as RFC 4180 CSV with a header row in SELECT order.
+// writeCSV writes records as RFC 4180 CSV with a header row in SELECT order;
+// nested parent/TYPEOF objects are flattened into dotted columns.
 func writeCSV(w io.Writer, records []json.RawMessage, total int) error {
 	cw := csv.NewWriter(w)
 	if len(records) == 0 {
@@ -168,17 +169,17 @@ func writeCSV(w io.Writer, records []json.RawMessage, total int) error {
 		cw.Flush()
 		return cw.Error()
 	}
-	cols, err := sfapi.Columns(records[0])
+	cols, data, err := sfapi.FlattenRecords(records)
 	if err != nil {
 		return err
 	}
 	if err := cw.Write(cols); err != nil {
 		return err
 	}
-	for _, rec := range records {
+	for _, rec := range data {
 		row := make([]string, len(cols))
 		for i, c := range cols {
-			row[i] = sfapi.Field(rec, c)
+			row[i] = rec[c]
 		}
 		if err := cw.Write(row); err != nil {
 			return err
@@ -204,7 +205,7 @@ func writeTable(w io.Writer, records []json.RawMessage, total int) error {
 		}
 		return nil
 	}
-	cols, err := sfapi.Columns(records[0])
+	cols, data, err := sfapi.FlattenRecords(records)
 	if err != nil {
 		return err
 	}
@@ -221,11 +222,11 @@ func writeTable(w io.Writer, records []json.RawMessage, total int) error {
 	}
 	fmt.Fprintln(tw, strings.Join(seps, "\t"))
 
-	for idx, rec := range records {
+	for idx, rec := range data {
 		vals := make([]string, len(cols)+1)
 		vals[0] = strconv.Itoa(idx + 1)
 		for i, c := range cols {
-			vals[i+1] = sfapi.Field(rec, c)
+			vals[i+1] = rec[c]
 		}
 		fmt.Fprintln(tw, strings.Join(vals, "\t"))
 	}

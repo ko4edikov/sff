@@ -269,3 +269,89 @@ func formatValue(raw json.RawMessage) string {
 	}
 	return s
 }
+
+// FlattenRecords turns query records into a rectangular table. Nested parent
+// objects (relationship fields and TYPEOF polymorphic results) are expanded
+// into dotted columns such as "Owner.Name" or "What.Name"; the synthetic
+// "attributes" object is dropped. Columns are the union of keys across all
+// records in first-seen order, so TYPEOF branches with different fields per
+// row still line up (missing cells are ""). Child subquery results
+// ({totalSize, done, records}) are not expanded and stay as compact JSON.
+func FlattenRecords(records []json.RawMessage) (cols []string, rows []map[string]string, err error) {
+	seen := map[string]bool{}
+	for _, rec := range records {
+		row := map[string]string{}
+		if err := flattenInto(rec, "", row, func(c string) {
+			if !seen[c] {
+				seen[c] = true
+				cols = append(cols, c)
+			}
+		}); err != nil {
+			return nil, nil, err
+		}
+		rows = append(rows, row)
+	}
+	// A relationship that was null in some records yields a bare "Rel" column
+	// next to "Rel.Field" columns from others; drop the redundant bare one.
+	var out []string
+	for _, c := range cols {
+		redundant := false
+		for _, o := range cols {
+			if strings.HasPrefix(o, c+".") {
+				redundant = true
+				break
+			}
+		}
+		if !redundant {
+			out = append(out, c)
+		}
+	}
+	return out, rows, nil
+}
+
+func flattenInto(raw json.RawMessage, prefix string, row map[string]string, add func(string)) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if _, err := dec.Token(); err != nil { // opening '{'
+		return err
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		key, _ := keyTok.(string)
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return err
+		}
+		if key == "attributes" {
+			continue
+		}
+		name := prefix + key
+		if isParentObject(value) {
+			if err := flattenInto(value, name+".", row, add); err != nil {
+				return err
+			}
+			continue
+		}
+		add(name)
+		row[name] = formatValue(value)
+	}
+	return nil
+}
+
+// isParentObject reports whether v is a nested record (a JSON object that is
+// not a child-subquery result wrapper).
+func isParentObject(v json.RawMessage) bool {
+	s := bytes.TrimSpace(v)
+	if len(s) == 0 || s[0] != '{' {
+		return false
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(s, &m) != nil {
+		return false
+	}
+	_, hasRecords := m["records"]
+	_, hasTotal := m["totalSize"]
+	return !(hasRecords && hasTotal)
+}
