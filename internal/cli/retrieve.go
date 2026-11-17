@@ -21,7 +21,8 @@ import (
 func newRetrieveCmd() *cobra.Command {
 	var metadata []string
 	var manifest, outputDir, projectDir, apiVersion string
-	var metadataFormat bool
+	var metadataFormat, dryRun bool
+	var filter modFilter
 	cmd := &cobra.Command{
 		Use:   "retrieve",
 		Short: "Retrieve metadata from an org (Metadata API)",
@@ -29,17 +30,24 @@ func newRetrieveCmd() *cobra.Command {
 			"specifiers or an existing package.xml. By default the result is converted to\n" +
 			"source format and merged into the sfdx project (like sf project retrieve start).\n" +
 			"Pass -d to write the converted source into that directory instead of merging;\n" +
-			"add --metadata-format to unzip the raw metadata-format files into -d instead.",
+			"add --metadata-format to unzip the raw metadata-format files into -d instead.\n\n" +
+			"--since/--until/--modified-by narrow the selection by modification time and\n" +
+			"author (applied on top of -m/-x; on a sandbox -m may be omitted to retrieve\n" +
+			"everything that changed, via source tracking). Components from installed\n" +
+			"packages are skipped unless --include-packages. Use --dry-run to list the\n" +
+			"resolved components without retrieving; see also `sff metadata list`.",
 		Example: `  sff retrieve -m ApexClass:MyClass
   sff retrieve -m permissionset:Admin,Standard,ReadOnly -o pr-dev
   sff retrieve -m ApexClass -m LWC:myCmp -o pr-dev
   sff retrieve -x manifest/package.xml
   sff retrieve -m ApexClass:MyClass -d ./out
-  sff retrieve -m ApexClass:MyClass --metadata-format -d ./mdapi`,
+  sff retrieve -m ApexClass:MyClass --metadata-format -d ./mdapi
+  sff retrieve -m ApexClass -m LWC --since 2d --modified-by me
+  sff retrieve --since 1d --modified-by "Jane*" -o pr-dev --dry-run`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(metadata) == 0 && manifest == "" {
-				return fmt.Errorf("specify metadata with -m or a manifest with -x")
+			if len(metadata) == 0 && manifest == "" && !filter.hasChangeFilter() {
+				return fmt.Errorf("specify metadata with -m or a manifest with -x (or --since/--modified-by on a sandbox)")
 			}
 			// -d only overrides source placement when the user set it; the
 			// metadata-format default ("./mdapi") must not leak into source mode.
@@ -47,7 +55,7 @@ func newRetrieveCmd() *cobra.Command {
 			if cmd.Flags().Changed("output-dir") {
 				sourceDest = outputDir
 			}
-			return runRetrieve(cmd.Context(), metadata, manifest, outputDir, sourceDest, projectDir, apiVersion, metadataFormat)
+			return runRetrieve(cmd.Context(), metadata, manifest, outputDir, sourceDest, projectDir, apiVersion, metadataFormat, &filter, dryRun)
 		},
 	}
 	cmd.Flags().StringArrayVarP(&metadata, "metadata", "m", nil, "metadata to retrieve as Type, Type:Name or Type:Name1,Name2; names may use * and ? patterns, e.g. CustomObject:EUR_Score* (case-insensitive, repeatable)")
@@ -56,12 +64,14 @@ func newRetrieveCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&outputDir, "output-dir", "d", "./mdapi", "output directory: converted source tree, or raw files with --metadata-format")
 	cmd.Flags().StringVar(&projectDir, "project-dir", "", "sfdx project to write source into (default: search up from cwd)")
 	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "list the components that would be retrieved, without retrieving")
+	addModFilterFlags(cmd, &filter)
 	cmd.MarkFlagsMutuallyExclusive("metadata", "manifest")
 	addTargetOrgFlag(cmd)
 	return cmd
 }
 
-func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, sourceDest, projectDir, apiVersion string, metadataFormat bool) error {
+func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, sourceDest, projectDir, apiVersion string, metadataFormat bool, filter *modFilter, dryRun bool) error {
 	start := time.Now()
 	// One spinner spans the whole pre-retrieve prep so a slow step (token
 	// refresh, API-version lookup, describe, listMetadata for pattern
@@ -87,12 +97,40 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, so
 	prog.Update("loading metadata describe")
 	catalog, _, _ := client.DescribeMetadataCached(ctx, false)
 
-	pkg, err := mdapi.BuildPackage(manifest, metadata, apiVersion, mdapi.NewTypeResolver(catalog))
-	if err != nil {
-		return err
+	var pkg *mdapi.Package
+	if len(metadata) > 0 || manifest != "" {
+		if pkg, err = mdapi.BuildPackage(manifest, metadata, apiVersion, mdapi.NewTypeResolver(catalog)); err != nil {
+			return err
+		}
 	}
-	if err := client.ExpandGlobs(ctx, pkg); err != nil {
-		return err
+	if filter.active() {
+		// Filters resolve the exact components (so patterns in -m are matched
+		// there rather than via ExpandGlobs).
+		client.OnStage = prog.Update
+		sel, err := resolveModified(ctx, org, client, catalog, pkg, filter, apiVersion, prog.Update)
+		if err != nil {
+			return err
+		}
+		prog.Stop()
+		reportHidden(os.Stderr, sel.Hidden)
+		reportSkipped(os.Stderr, sel.Skipped)
+		if len(sel.Entries) == 0 {
+			fmt.Fprintf(os.Stderr, "no components match the filters (checked via %s)\n", sel.Source)
+			return nil
+		}
+		if dryRun {
+			return printEntries(os.Stdout, sel.Entries, false)
+		}
+		prog = progress.StartAt(start, "retrieving")
+		pkg = packageFromEntries(sel.Entries, apiVersion)
+	} else {
+		if err := client.ExpandGlobs(ctx, pkg); err != nil {
+			return err
+		}
+		if dryRun {
+			prog.Stop()
+			return printEntries(os.Stdout, entriesFromPackage(pkg), false)
+		}
 	}
 
 	// Resolve the source-format destination project up front so a missing
@@ -176,4 +214,16 @@ func printFileList(files []string, base string) {
 	for _, f := range out {
 		fmt.Println("  " + f)
 	}
+}
+
+// entriesFromPackage flattens a manifest into selection rows (no modification
+// details are known for an explicit package).
+func entriesFromPackage(pkg *mdapi.Package) []modEntry {
+	var out []modEntry
+	for _, t := range pkg.Types {
+		for _, m := range t.Members {
+			out = append(out, modEntry{Type: t.Name, Name: m})
+		}
+	}
+	return out
 }

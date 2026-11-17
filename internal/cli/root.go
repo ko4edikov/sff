@@ -58,6 +58,7 @@ func newRootCmd(version string) *cobra.Command {
 	root.AddCommand(newQueryCmd())
 	root.AddCommand(newOrgCmd())
 	root.AddCommand(newRetrieveCmd())
+	root.AddCommand(newMetadataCmd())
 	root.AddCommand(newDeployCmd())
 	root.AddCommand(newDeleteCmd())
 	root.AddCommand(newManifestCmd())

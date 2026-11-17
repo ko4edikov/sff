@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/ko4edikov/sff/pkg/auth"
 	"github.com/ko4edikov/sff/pkg/sfapi"
@@ -29,6 +30,26 @@ type Client struct {
 	// than listMetadata (e.g. SOQL). It returns handled=false for types it
 	// doesn't cover; an error makes ExpandGlobs fall back to listMetadata.
 	FastList func(ctx context.Context, typ string, patterns []string) (names []string, handled bool, err error)
+
+	tokenMu sync.Mutex // serializes token reads and refreshes across concurrent calls
+}
+
+// token returns the current access token.
+func (c *Client) token() string {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	return c.Org.AccessToken
+}
+
+// refreshIfStale refreshes the org token unless another goroutine already
+// replaced stale since it was used.
+func (c *Client) refreshIfStale(ctx context.Context, stale string) error {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	if c.Org.AccessToken != stale {
+		return nil
+	}
+	return c.Org.Refresh(ctx)
 }
 
 // New returns a Client for org using the default API version.
@@ -48,13 +69,14 @@ func (c *Client) endpoint() string {
 // response body. On an INVALID_SESSION_ID fault it refreshes the token once and
 // retries. action is the SOAPAction header value (Salesforce accepts "").
 func (c *Client) call(ctx context.Context, action, innerBody string) ([]byte, error) {
+	used := c.token()
 	body, status, err := c.send(ctx, action, innerBody)
 	if err != nil {
 		return nil, err
 	}
 	if fault := parseFault(body); fault != nil {
 		if fault.isInvalidSession() {
-			if rerr := c.Org.Refresh(ctx); rerr != nil {
+			if rerr := c.refreshIfStale(ctx, used); rerr != nil {
 				return nil, fmt.Errorf("token refresh after INVALID_SESSION_ID: %w", rerr)
 			}
 			body, status, err = c.send(ctx, action, innerBody)
@@ -77,7 +99,7 @@ func (c *Client) call(ctx context.Context, action, innerBody string) ([]byte, er
 func (c *Client) send(ctx context.Context, action, innerBody string) ([]byte, int, error) {
 	envelope := `<?xml version="1.0" encoding="UTF-8"?>` +
 		`<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:met="` + metadataNS + `">` +
-		`<soapenv:Header><met:SessionHeader><met:sessionId>` + xmlEscape(c.Org.AccessToken) + `</met:sessionId></met:SessionHeader></soapenv:Header>` +
+		`<soapenv:Header><met:SessionHeader><met:sessionId>` + xmlEscape(c.token()) + `</met:sessionId></met:SessionHeader></soapenv:Header>` +
 		`<soapenv:Body>` + innerBody + `</soapenv:Body>` +
 		`</soapenv:Envelope>`
 

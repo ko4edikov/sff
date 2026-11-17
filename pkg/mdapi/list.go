@@ -32,8 +32,13 @@ type ListQuery struct {
 
 // FileProperties is the subset of listMetadata's FileProperties we use.
 type FileProperties struct {
-	FullName string `xml:"fullName"`
-	Type     string `xml:"type"`
+	FullName           string `xml:"fullName"`
+	Type               string `xml:"type"`
+	LastModifiedByID   string `xml:"lastModifiedById"`
+	LastModifiedByName string `xml:"lastModifiedByName"`
+	LastModifiedDate   string `xml:"lastModifiedDate"`
+	ManageableState    string `xml:"manageableState"`
+	NamespacePrefix    string `xml:"namespacePrefix"`
 }
 
 type listEnv struct {
@@ -70,33 +75,36 @@ func (c *Client) ListMetadata(ctx context.Context, queries []ListQuery) ([]FileP
 	return out, nil
 }
 
-// listNames returns the fullName of every component of typ in the org. For a
-// folder-based type it lists the folders first, then the contents of each, and
-// includes the folders themselves.
-func (c *Client) listNames(ctx context.Context, typ string) ([]string, error) {
+// ListTypeProps returns the properties of every component of typ in the org.
+// For a folder-based type it lists the folders first, then the contents of each,
+// and includes the folders themselves.
+func (c *Client) ListTypeProps(ctx context.Context, typ string) ([]FileProperties, error) {
 	folderType, inFolder := folderTypes[typ]
 	if !inFolder {
-		props, err := c.ListMetadata(ctx, []ListQuery{{Type: typ}})
-		if err != nil {
-			return nil, err
-		}
-		return fullNames(props), nil
+		return c.ListMetadata(ctx, []ListQuery{{Type: typ}})
 	}
-
 	folders, err := c.ListMetadata(ctx, []ListQuery{{Type: folderType}})
 	if err != nil {
 		return nil, err
 	}
-	names := fullNames(folders)
-	queries := make([]ListQuery, len(names))
-	for i, f := range names {
-		queries[i] = ListQuery{Type: typ, Folder: f}
+	queries := make([]ListQuery, len(folders))
+	for i, f := range folders {
+		queries[i] = ListQuery{Type: typ, Folder: f.FullName}
 	}
 	items, err := c.ListMetadata(ctx, queries)
 	if err != nil {
 		return nil, err
 	}
-	return append(names, fullNames(items)...), nil
+	return append(folders, items...), nil
+}
+
+// listNames returns the fullName of every component of typ in the org.
+func (c *Client) listNames(ctx context.Context, typ string) ([]string, error) {
+	props, err := c.ListTypeProps(ctx, typ)
+	if err != nil {
+		return nil, err
+	}
+	return fullNames(props), nil
 }
 
 func fullNames(props []FileProperties) []string {
@@ -131,6 +139,20 @@ func globRegexp(pattern string) *regexp.Regexp {
 	}
 	b.WriteString("$")
 	return regexp.MustCompile(b.String())
+}
+
+// MatchMember reports whether a component name matches a -m member specifier:
+// a bare "*" matches everything, a pattern with * or ? is a case-insensitive
+// glob, and anything else is a case-insensitive exact name.
+func MatchMember(pattern, name string) bool {
+	switch {
+	case pattern == "*":
+		return true
+	case IsGlob(pattern):
+		return globRegexp(pattern).MatchString(name)
+	default:
+		return strings.EqualFold(pattern, name)
+	}
 }
 
 // ExpandGlobs replaces every partial-wildcard member in pkg ("Foo*") with the
