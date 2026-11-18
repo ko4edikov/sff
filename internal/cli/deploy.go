@@ -119,6 +119,7 @@ func newDeployCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&ignoreErrors, "ignore-errors", false, "don't roll back on failure; keep components that deployed successfully")
 	cmd.Flags().IntVarP(&wait, "wait", "w", 0, "minutes to wait for the deploy to finish (0 = wait indefinitely)")
 	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
+	cmd.AddCommand(newDeployListCmd(), newDeployReportCmd())
 	cmd.MarkFlagsMutuallyExclusive("source-dir", "metadata", "manifest", "changed", "commit")
 	addTargetOrgFlag(cmd)
 	return cmd

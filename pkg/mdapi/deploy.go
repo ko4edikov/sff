@@ -51,6 +51,35 @@ type TestFailure struct {
 	StackTrace string `xml:"stackTrace"`
 }
 
+// TestSuccess is one passed Apex test from a deploy that ran tests.
+type TestSuccess struct {
+	Name       string  `xml:"name"`
+	MethodName string  `xml:"methodName"`
+	Time       float64 `xml:"time"` // milliseconds
+}
+
+// CodeCoverage is the coverage of one Apex class/trigger touched by a deploy.
+type CodeCoverage struct {
+	Name                   string `xml:"name"`
+	Type                   string `xml:"type"`
+	NumLocations           int    `xml:"numLocations"`
+	NumLocationsNotCovered int    `xml:"numLocationsNotCovered"`
+}
+
+// Percent is the covered share of lines, 100 when there are none to cover.
+func (c CodeCoverage) Percent() float64 {
+	if c.NumLocations == 0 {
+		return 100
+	}
+	return 100 * float64(c.NumLocations-c.NumLocationsNotCovered) / float64(c.NumLocations)
+}
+
+// CoverageWarning is a coverage problem (e.g. org-wide coverage below 75%).
+type CoverageWarning struct {
+	Name    string `xml:"name"`
+	Message string `xml:"message"`
+}
+
 // DeployResult is the outcome of a completed (or in-progress) deploy.
 type DeployResult struct {
 	ID                       string
@@ -69,6 +98,9 @@ type DeployResult struct {
 	ComponentFailures        []ComponentMessage
 	ComponentSuccesses       []ComponentMessage
 	TestFailures             []TestFailure
+	TestSuccesses            []TestSuccess
+	Coverage                 []CodeCoverage
+	CoverageWarnings         []CoverageWarning
 }
 
 // deployStartEnv mirrors the <result> of the deploy() response (an AsyncResult).
@@ -100,7 +132,10 @@ type deployStatusEnv struct {
 			ComponentFailures  []ComponentMessage `xml:"componentFailures"`
 			ComponentSuccesses []ComponentMessage `xml:"componentSuccesses"`
 			RunTestResult      struct {
-				Failures []TestFailure `xml:"failures"`
+				Failures         []TestFailure     `xml:"failures"`
+				Successes        []TestSuccess     `xml:"successes"`
+				CodeCoverage     []CodeCoverage    `xml:"codeCoverage"`
+				CoverageWarnings []CoverageWarning `xml:"codeCoverageWarnings"`
 			} `xml:"runTestResult"`
 		} `xml:"details"`
 	} `xml:"Body>checkDeployStatusResponse>result"`
@@ -165,6 +200,9 @@ func (c *Client) CheckDeployStatus(ctx context.Context, id string) (done bool, r
 		ComponentFailures:        r.Details.ComponentFailures,
 		ComponentSuccesses:       r.Details.ComponentSuccesses,
 		TestFailures:             r.Details.RunTestResult.Failures,
+		TestSuccesses:            r.Details.RunTestResult.Successes,
+		Coverage:                 r.Details.RunTestResult.CodeCoverage,
+		CoverageWarnings:         r.Details.RunTestResult.CoverageWarnings,
 	}
 	return r.Done, out, nil
 }

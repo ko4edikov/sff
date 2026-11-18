@@ -248,6 +248,21 @@ Notes:
 - Component and test failures are printed per line; the process exits non-zero
   when the deploy doesn't succeed.
 
+### Deploy history (`sff deploy list` / `sff deploy report`)
+
+The same data as Setup → Deployment Status (`DeployRequest` via the Tooling API,
+about 180 days of history).
+
+- `sff deploy list` — recent deploys and validations, newest first: Id, status,
+  kind, start time, duration, author, components and tests. Filters: `-n/--limit`,
+  `--status`, `--since`, `--until`, `--mine`, `--check-only`; `--json` for scripts.
+- `sff deploy report <id>` — what the deploy did to each component (`Created`,
+  `Changed`, `Deleted`, `Unchanged`) plus component errors. `--tests` adds Apex
+  test results and per-class code coverage.
+- `sff deploy report` with no Id in a terminal opens an interactive picker
+  (↑/↓, `/` to filter, Enter to select, `q` to quit) over the same filters as
+  `list`, then prints the report.
+
 ## Comparing with the org (`sff diff`)
 
 Fetches a component's source from the org and compares it with the local copy.
