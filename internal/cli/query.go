@@ -65,6 +65,11 @@ const (
 )
 
 func runQuery(ctx context.Context, soql string, format outFormat, outFile string, useTooling bool, concurrency int) error {
+	// JSON/CSV are streamed page by page; only the table needs every row up
+	// front (column widths).
+	if format != formatTable {
+		return runQueryStream(ctx, soql, format, outFile, useTooling, concurrency)
+	}
 	org, err := auth.Resolve(targetOrg)
 	if err != nil {
 		return err

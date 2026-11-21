@@ -137,6 +137,16 @@ stderr, so piped or saved output stays clean.
 {"records":[…],"totalSize":N,"done":true}}` — so sff is a drop-in replacement
 in scripts that parse `.result.records`.
 
+**Large results.** Extra pages are fetched in parallel through the Composite
+Batch API (`-c/--concurrency`, default 10; Tooling queries paginate serially).
+`--json` and `--csv` are **streamed**: records are written page by page in
+order, so memory stays flat and the first rows appear as soon as the first page
+arrives — handy for big exports (`--csv -f big.csv`). The table needs every row
+to align columns, so it is buffered. For streamed CSV the header comes from the
+first page; a column that first appears on a later page (e.g. a relationship
+that was null on all earlier rows) is omitted with a warning on stderr. If a
+fetch fails mid-stream the output is partial and the error says so.
+
 ## Retrieving metadata (`sff retrieve`)
 
 Retrieves metadata via the Metadata API (SOAP), selected by `-m Type:Name`
@@ -396,7 +406,7 @@ sff manifest --changed --json
 
 - [x] `pkg/auth` — read `sf` auth files, Keychain decrypt, token refresh
 - [x] `pkg/sfapi` — REST client with auto-refresh on 401
-- [x] `sff query "SELECT ..."` — SOQL with pagination, table / `--json` / `--csv` output (~0.3s)
+- [x] `sff query "SELECT ..."` — SOQL with pagination, table / `--json` / `--csv` output (~0.3s), parallel composite pagination, streamed JSON/CSV
 - [x] `sff retrieve` — Metadata API (SOAP), `-m`/`-x`, source-format by default (`--metadata-format` for raw)
 - [x] `sff org list metadata-types` — describeMetadata catalog (cached in `~/.sff`)
 - [x] source-format decomposition for `CustomObject`/`CustomObjectTranslation`/`Bot` (byte-identical to sf)
@@ -432,7 +442,7 @@ go get github.com/ko4edikov/sff/pkg/sfapi
 | Package | What it gives you |
 |---|---|
 | `pkg/auth` | Resolve `sf`'s stored credentials (`auth.Resolve(alias)`, `""` = default org), Keychain decrypt, token refresh. |
-| `pkg/sfapi` | REST + Tooling client with auto-refresh on 401: `Query`, `QueryTooling`, `ToolingDeploy`, plus `Columns`/`Field` record helpers. |
+| `pkg/sfapi` | REST + Tooling client with auto-refresh on 401: `Query`, `QueryTooling`, `QueryStream` (ordered page-by-page callback, parallel composite pagination), `Describe`/`DescribeGlobal` (REST or Tooling), `ToolingDeploy`, plus `Columns`/`FlattenRecords`/`Field` record helpers. |
 | `pkg/mdapi` | Metadata API SOAP client: `Deploy`/`DeployAndWait`, `Retrieve`/`RetrieveAndWait`, `DescribeMetadata`, and zip/manifest helpers. |
 | `pkg/source` | Source-format ↔ metadata-format conversion (decompose/recompose, static resources). |
 | `pkg/project` | Locate and read the surrounding sfdx project. |
