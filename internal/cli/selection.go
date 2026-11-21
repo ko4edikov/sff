@@ -167,6 +167,14 @@ func resolveModified(ctx context.Context, org *auth.Org, client *mdapi.Client, c
 			if err != nil {
 				return nil, err
 			}
+			if os.Getenv("SFF_NO_FASTLIST") == "" {
+				// SourceMember misses components deployed via the Tooling API (and
+				// other untracked paths), so top it up from the SOQL-listable types.
+				extra := sc.FastListAll(ctx, sfapi.FastQuery{Since: since, Until: until, UserIDs: userIDs}, 6)
+				entries = mergeFastEntries(entries, extra, inScope, f.includePackages, userByID)
+				fillUserNames(ctx, sc, entries)
+				sortEntries(entries)
+			}
 			return finalizeSelection(entries, "SourceMember", scope, excl, f), nil
 		} else {
 			stage("SourceMember unavailable (" + err.Error() + "); falling back to listMetadata")
@@ -694,4 +702,32 @@ func reportHidden(w io.Writer, hidden map[string]int) {
 	for _, t := range types {
 		fmt.Fprintf(w, "hid %d %s entries modified in one burst by one user (likely a cascade from another change); --include-cascading or -m %s to show them\n", hidden[t], t, t)
 	}
+}
+
+// mergeFastEntries adds SOQL-found components to entries, keeping the newer
+// modification when a component appears in both.
+func mergeFastEntries(entries []modEntry, extra map[string][]sfapi.FastEntry, inScope func(typ, name string) bool,
+	includePackages bool, userByID map[string]string) []modEntry {
+
+	idx := map[string]int{}
+	for i, e := range entries {
+		idx[e.Type+":"+e.Name] = i
+	}
+	for typ, es := range extra {
+		for _, e := range es {
+			if (e.Managed && !includePackages) || !inScope(typ, e.Name) {
+				continue
+			}
+			ne := modEntry{Type: typ, Name: e.Name, ModifiedBy: userByID[id15(e.ChangedBy)], Modified: e.Modified, byID: e.ChangedBy}
+			if i, ok := idx[typ+":"+e.Name]; ok {
+				if e.Modified.After(entries[i].Modified) {
+					entries[i] = ne
+				}
+				continue
+			}
+			idx[typ+":"+e.Name] = len(entries)
+			entries = append(entries, ne)
+		}
+	}
+	return entries
 }

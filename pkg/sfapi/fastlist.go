@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -334,4 +335,33 @@ func (c *Client) FastListEntries(ctx context.Context, typ string, q FastQuery) (
 func parseSFTime(s string) time.Time {
 	t, _ := time.Parse("2006-01-02T15:04:05.000-0700", s)
 	return t
+}
+
+// FastListAll runs FastListEntries for every SOQL-listable type (plus
+// CustomField) with up to workers queries in flight. Types whose query fails
+// are skipped: this is a best-effort supplement to another source.
+func (c *Client) FastListAll(ctx context.Context, q FastQuery, workers int) map[string][]FastEntry {
+	types := []string{"CustomField"}
+	for t := range listSources {
+		types = append(types, t)
+	}
+	out := map[string][]FastEntry{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, workers)
+	for _, t := range types {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(t string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if es, handled, err := c.FastListEntries(ctx, t, q); handled && err == nil && len(es) > 0 {
+				mu.Lock()
+				out[t] = es
+				mu.Unlock()
+			}
+		}(t)
+	}
+	wg.Wait()
+	return out
 }
