@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/ko4edikov/sff/pkg/auth"
 	"github.com/ko4edikov/sff/pkg/progress"
@@ -20,17 +23,18 @@ import (
 )
 
 func newQueryCmd() *cobra.Command {
-	var asJSON, asCSV, useTooling bool
+	var asJSON, asCSV, asParquet, useTooling, stream bool
 	var outFile string
 	var concurrency int
 	cmd := &cobra.Command{
 		Use:   "query <soql>",
 		Short: "Run a SOQL query",
-		Long:  "Run a SOQL query against an org and print the results as a table, JSON, or CSV.",
+		Long:  "Run a SOQL query against an org and print the results as a table, JSON, CSV, or Parquet.\n\nParquet (--parquet, or -f with a .parquet extension) is typed and compressed (zstd), ready for DuckDB/pandas/Spark. Binary output needs -f or a pipe.",
 		Example: `  sff query "SELECT Id, Name FROM Account LIMIT 10"
   sff query "SELECT Id FROM Contact" -o pr-dev --json
   sff query "SELECT Id, Name FROM ApexClass" -t
-  sff query "SELECT Id, Name FROM Account" --csv -f accounts.csv`,
+  sff query "SELECT Id, Name FROM Account" --csv -f accounts.csv
+  sff query "SELECT Id, Name, CreatedDate FROM Account" -f accounts.parquet`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			soql := strings.TrimSpace(strings.Join(args, " "))
@@ -38,23 +42,34 @@ func newQueryCmd() *cobra.Command {
 				return fmt.Errorf("a SOQL statement is required")
 			}
 			format := formatTable
-			if asJSON {
+			switch {
+			case asJSON:
 				format = formatJSON
-			} else if asCSV {
+			case asCSV:
 				format = formatCSV
+			case asParquet || strings.EqualFold(filepath.Ext(outFile), ".parquet"):
+				format = formatParquet
 			}
-			return runQuery(cmd.Context(), soql, format, outFile, useTooling, concurrency)
+			if format == formatParquet && outFile == "" && term.IsTerminal(int(os.Stdout.Fd())) {
+				return fmt.Errorf("Parquet is binary: use -f <file>.parquet or pipe the output")
+			}
+			return runQuery(cmd.Context(), soql, format, outFile, useTooling, concurrency, stream)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output raw JSON records")
 	cmd.Flags().BoolVar(&asCSV, "csv", false, "output CSV")
+	cmd.Flags().BoolVar(&asParquet, "parquet", false, "output Parquet (typed, zstd-compressed; implied by -f *.parquet)")
+	cmd.Flags().BoolVar(&stream, "stream", false, "stream JSON/CSV/Parquet page by page: flat memory for huge exports, but columns/types are fixed by the first page")
 	cmd.Flags().StringVarP(&outFile, "out-file", "f", "", "write the result to a file instead of stdout")
 	cmd.Flags().BoolVarP(&useTooling, "use-tooling-api", "t", false, "query the Tooling API (e.g. ApexClass, Flow, CustomField)")
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", sfapi.DefaultBatchConcurrency, "max parallel composite/batch calls when paginating large results")
-	cmd.MarkFlagsMutuallyExclusive("json", "csv")
+	cmd.MarkFlagsMutuallyExclusive("json", "csv", "parquet")
 	addTargetOrgFlag(cmd)
 	return cmd
 }
+
+// streamHintThreshold is the row count above which a buffered export suggests --stream.
+const streamHintThreshold = 500000
 
 type outFormat int
 
@@ -62,12 +77,15 @@ const (
 	formatTable outFormat = iota
 	formatJSON
 	formatCSV
+	formatParquet
 )
 
-func runQuery(ctx context.Context, soql string, format outFormat, outFile string, useTooling bool, concurrency int) error {
-	// JSON/CSV are streamed page by page; only the table needs every row up
-	// front (column widths).
-	if format != formatTable {
+func runQuery(ctx context.Context, soql string, format outFormat, outFile string, useTooling bool, concurrency int, stream bool) error {
+	// By default every format is buffered: all rows are fetched first, so the
+	// column set and types come from the whole result. --stream writes JSON/CSV/
+	// Parquet page by page instead (flat memory, but the schema is fixed by the
+	// first page).
+	if stream && format != formatTable {
 		return runQueryStream(ctx, soql, format, outFile, useTooling, concurrency)
 	}
 	org, err := auth.Resolve(targetOrg)
@@ -107,6 +125,17 @@ func runQuery(ctx context.Context, soql string, format outFormat, outFile string
 		err = writeJSON(w, records, total)
 	case formatCSV:
 		err = writeCSV(w, records, total)
+	case formatParquet:
+		err = writeParquet(w, records, total, func(name string) (*sfapi.SObjectDescribe, error) {
+			return client.Describe(ctx, name, useTooling)
+		})
+		if errors.Is(err, errNoRows) {
+			fmt.Fprintln(os.Stderr, "warning: "+errNoRows.Error())
+			if outFile != "" {
+				_ = os.Remove(outFile)
+			}
+			return nil
+		}
 	default:
 		err = writeTable(w, records, total)
 	}
@@ -119,6 +148,9 @@ func runQuery(ctx context.Context, soql string, format outFormat, outFile string
 	summary := io.Writer(os.Stderr)
 	if outFile == "" && format == formatTable {
 		summary = os.Stdout
+	}
+	if format != formatTable && total > streamHintThreshold {
+		fmt.Fprintf(os.Stderr, "tip: %d rows were buffered in memory; for results this large use --stream to keep memory flat\n", total)
 	}
 	if outFile != "" {
 		fmt.Fprintf(summary, "wrote %d record(s) to %s in %s\n", len(records), outFile, fmtDuration(elapsed))

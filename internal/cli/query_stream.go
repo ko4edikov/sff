@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,8 +40,10 @@ func runQueryStream(ctx context.Context, soql string, format outFormat, outFile 
 	client.BatchConcurrency = concurrency
 
 	var out io.Writer = os.Stdout
+	var f *os.File
 	if outFile != "" {
-		f, err := os.Create(outFile)
+		var err error
+		f, err = os.Create(outFile)
 		if err != nil {
 			return fmt.Errorf("create %s: %w", outFile, err)
 		}
@@ -50,9 +53,14 @@ func runQueryStream(ctx context.Context, soql string, format outFormat, outFile 
 	bw := bufio.NewWriterSize(out, 64*1024)
 
 	var sink recordSink
-	if format == formatJSON {
+	switch format {
+	case formatJSON:
 		sink = &jsonSink{w: bw}
-	} else {
+	case formatParquet:
+		sink = &parquetSink{w: bw, warn: os.Stderr, describe: func(name string) (*sfapi.SObjectDescribe, error) {
+			return client.Describe(ctx, name, useTooling)
+		}}
+	default:
 		sink = &csvSink{w: bw, warn: os.Stderr}
 	}
 
@@ -78,6 +86,14 @@ func runQueryStream(ctx context.Context, soql string, format outFormat, outFile 
 	}
 	if ferr := bw.Flush(); err == nil {
 		err = ferr
+	}
+	if errors.Is(err, errNoRows) {
+		fmt.Fprintln(os.Stderr, "warning: "+errNoRows.Error())
+		if outFile != "" {
+			f.Close()
+			_ = os.Remove(outFile)
+		}
+		return nil
 	}
 	if err != nil {
 		if count > 0 {
@@ -221,7 +237,7 @@ func (s *csvSink) end(total int) error {
 			names = append(names, c)
 		}
 		sort.Strings(names)
-		fmt.Fprintf(s.warn, "warning: column(s) not present in the first page were omitted from the CSV: %s\n", strings.Join(names, ", "))
+		fmt.Fprintf(s.warn, "warning: column(s) not present in the first page were omitted from the CSV: %s (run without --stream to keep them)\n", strings.Join(names, ", "))
 	}
 	return s.cw.Error()
 }

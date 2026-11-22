@@ -126,10 +126,13 @@ sff query "SELECT Id FROM Contact" -o pr-dev               # pick org by alias
 sff query "SELECT Id, Name FROM Profile LIMIT 1" --json    # sf-compatible JSON
 sff query "SELECT Id, Name FROM Account" --csv             # CSV to stdout
 sff query "SELECT Id, Name FROM Account" --csv -f acc.csv  # CSV to a file
+sff query "SELECT Id, Name FROM Account" -f acc.parquet    # Parquet (implied by the extension)
 sff query "SELECT Id, Name FROM ApexClass" -t              # Tooling API (sf data query -t)
 ```
 
-Output formats: table (default), `--json`, `--csv` (mutually exclusive).
+Output formats: table (default), `--json`, `--csv`, `--parquet` (mutually exclusive). `-f x.parquet` implies `--parquet`.
+
+Parquet is typed and zstd-compressed (one row group per page), so DuckDB/pandas/Spark read it directly (`SELECT * FROM 'acc.parquet'`). Root-object columns are typed from the object's describe (int/double/date/timestamp/boolean); relationship columns (`Owner.Name`) are typed from the JSON values (all-null → string; first page only with `--stream`). In `--stream` mode columns first seen after page one are omitted with a warning. Binary output needs `-f` or a pipe.
 `-f/--out-file` writes the data to a file; the timing summary then goes to
 stderr, so piped or saved output stays clean.
 
@@ -139,7 +142,7 @@ in scripts that parse `.result.records`.
 
 **Large results.** Extra pages are fetched in parallel through the Composite
 Batch API (`-c/--concurrency`, default 10; Tooling queries paginate serially).
-`--json` and `--csv` are **streamed**: records are written page by page in
+By default every format is **buffered**: all rows are fetched first, so columns and Parquet types come from the whole result. `--stream` switches JSON/CSV/Parquet to **streaming**: records are written page by page in
 order, so memory stays flat and the first rows appear as soon as the first page
 arrives — handy for big exports (`--csv -f big.csv`). The table needs every row
 to align columns, so it is buffered. For streamed CSV the header comes from the

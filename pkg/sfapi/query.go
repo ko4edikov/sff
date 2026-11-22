@@ -278,16 +278,36 @@ func formatValue(raw json.RawMessage) string {
 // row still line up (missing cells are ""). Child subquery results
 // ({totalSize, done, records}) are not expanded and stay as compact JSON.
 func FlattenRecords(records []json.RawMessage) (cols []string, rows []map[string]string, err error) {
+	cols, rows, _, err = FlattenRecordsKinds(records)
+	return cols, rows, err
+}
+
+// ValueKind is the JSON type of a flattened column's non-null values.
+type ValueKind byte
+
+const (
+	KindNull   ValueKind = 0   // every value was null (type unknown)
+	KindString ValueKind = 's' // JSON string, or an unexpanded object/array
+	KindNumber ValueKind = 'n'
+	KindBool   ValueKind = 'b'
+	KindMixed  ValueKind = 'm' // values of different JSON types
+)
+
+// FlattenRecordsKinds is FlattenRecords plus the JSON type seen for each
+// returned column, which the cell strings alone cannot tell apart (the string
+// "123" vs the number 123).
+func FlattenRecordsKinds(records []json.RawMessage) (cols []string, rows []map[string]string, kinds map[string]ValueKind, err error) {
+	kinds = map[string]ValueKind{}
 	seen := map[string]bool{}
 	for _, rec := range records {
 		row := map[string]string{}
-		if err := flattenInto(rec, "", row, func(c string) {
+		if err := flattenInto(rec, "", row, kinds, func(c string) {
 			if !seen[c] {
 				seen[c] = true
 				cols = append(cols, c)
 			}
 		}); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		rows = append(rows, row)
 	}
@@ -306,10 +326,10 @@ func FlattenRecords(records []json.RawMessage) (cols []string, rows []map[string
 			out = append(out, c)
 		}
 	}
-	return out, rows, nil
+	return out, rows, kinds, nil
 }
 
-func flattenInto(raw json.RawMessage, prefix string, row map[string]string, add func(string)) error {
+func flattenInto(raw json.RawMessage, prefix string, row map[string]string, kinds map[string]ValueKind, add func(string)) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if _, err := dec.Token(); err != nil { // opening '{'
 		return err
@@ -329,13 +349,14 @@ func flattenInto(raw json.RawMessage, prefix string, row map[string]string, add 
 		}
 		name := prefix + key
 		if isParentObject(value) {
-			if err := flattenInto(value, name+".", row, add); err != nil {
+			if err := flattenInto(value, name+".", row, kinds, add); err != nil {
 				return err
 			}
 			continue
 		}
 		add(name)
 		row[name] = formatValue(value)
+		kinds[name] = mergeKind(kinds[name], kindOf(value))
 	}
 	return nil
 }
@@ -354,4 +375,28 @@ func isParentObject(v json.RawMessage) bool {
 	_, hasRecords := m["records"]
 	_, hasTotal := m["totalSize"]
 	return !(hasRecords && hasTotal)
+}
+
+func kindOf(v json.RawMessage) ValueKind {
+	s := bytes.TrimSpace(v)
+	switch {
+	case len(s) == 0 || string(s) == "null":
+		return KindNull
+	case s[0] == '"' || s[0] == '{' || s[0] == '[':
+		return KindString
+	case s[0] == 't' || s[0] == 'f':
+		return KindBool
+	default:
+		return KindNumber
+	}
+}
+
+func mergeKind(a, b ValueKind) ValueKind {
+	switch {
+	case a == KindNull:
+		return b
+	case b == KindNull || a == b:
+		return a
+	}
+	return KindMixed
 }
