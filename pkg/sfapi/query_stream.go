@@ -62,6 +62,12 @@ func (c *Client) QueryStream(ctx context.Context, soql string, tooling bool, onP
 // each group's records are handed to emit strictly in record order as soon as
 // that group and all earlier ones have arrived, instead of being collected.
 // A fetch error or an error returned by emit cancels the remaining work.
+//
+// A concurrency slot is held from the start of a group's fetch until its emit
+// returns, so fetched-but-not-yet-emitted groups count against the limit too:
+// at most BatchConcurrency groups are in memory at once, and a slow consumer
+// back-pressures the fetching. This cannot deadlock: slots are taken in group
+// order, so the group emit is waiting for always already owns one.
 func (c *Client) streamPagesComposite(ctx context.Context, first QueryResult, emit func([]json.RawMessage) error) error {
 	next := first.NextRecordsURL
 	dash := strings.LastIndex(next, "-")
@@ -118,9 +124,10 @@ func (c *Client) streamPagesComposite(ctx context.Context, first QueryResult, em
 		return err
 	}
 
-	// Dispatcher: a buffered channel acts as the semaphore.
+	// Dispatcher: a buffered channel acts as the semaphore. Slots are released
+	// by the consumer loop below, after emit.
+	sem := make(chan struct{}, conc)
 	go func() {
-		sem := make(chan struct{}, conc)
 		for i, group := range groups {
 			select {
 			case sem <- struct{}{}:
@@ -131,7 +138,6 @@ func (c *Client) streamPagesComposite(ctx context.Context, first QueryResult, em
 				return
 			}
 			go func(i int, group []string) {
-				defer func() { <-sem }()
 				recs, err := c.fetchPageGroup(ctx, group)
 				if err != nil {
 					fail(err)
@@ -146,7 +152,9 @@ func (c *Client) streamPagesComposite(ctx context.Context, first QueryResult, em
 		if r.err != nil {
 			return cause(r.err)
 		}
-		if err := emit(r.records); err != nil {
+		err := emit(r.records)
+		<-sem // release only now: the group is written and can be dropped
+		if err != nil {
 			return err
 		}
 	}
