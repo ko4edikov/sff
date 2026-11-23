@@ -30,7 +30,10 @@ func (c *Client) QueryStream(ctx context.Context, soql string, tooling bool, onP
 	if err := onPage(first.Records, first.TotalSize); err != nil {
 		return err
 	}
-	if first.Done || first.NextRecordsURL == "" {
+	// Salesforce sometimes reports done=false with a nextRecordsUrl although
+	// every row (totalSize) is already in hand; following it would just wait
+	// for a page that never carries data.
+	if first.Done || first.NextRecordsURL == "" || len(first.Records) >= first.TotalSize {
 		return nil
 	}
 
@@ -41,6 +44,7 @@ func (c *Client) QueryStream(ctx context.Context, soql string, tooling bool, onP
 	}
 
 	next := first.NextRecordsURL
+	got := len(first.Records)
 	for next != "" {
 		page, err := c.queryPage(ctx, next)
 		if err != nil {
@@ -49,7 +53,8 @@ func (c *Client) QueryStream(ctx context.Context, soql string, tooling bool, onP
 		if err := onPage(page.Records, first.TotalSize); err != nil {
 			return err
 		}
-		if page.Done {
+		got += len(page.Records)
+		if page.Done || got >= first.TotalSize {
 			break
 		}
 		next = page.NextRecordsURL
