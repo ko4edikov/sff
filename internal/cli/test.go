@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -19,7 +21,7 @@ import (
 func newTestCmd() *cobra.Command {
 	var classNames []string
 	var testLevel, apiVersion string
-	var coverage, asJSON, dryRun bool
+	var coverage, asJSON, dryRun, changed bool
 	var wait int
 	cmd := &cobra.Command{
 		Use:   "test",
@@ -29,16 +31,25 @@ func newTestCmd() *cobra.Command {
 			"(class names may contain * wildcards, e.g. -n 'Account*Test')\n" +
 			"(repeatable, comma-separated allowed), or with -l RunLocalTests|RunAllTestsInOrg.\n" +
 			"Add -c/--code-coverage to list line coverage of every class and trigger the\n" +
-			"tests exercised, plus the org-wide percentage. Exits 1 if any test fails.",
+			"tests exercised, plus the org-wide percentage. Exits 1 if any test fails.\n\n" +
+			"Use --changed to run the test classes (@IsTest) added or modified in the git\n" +
+			"working tree vs HEAD (staged, unstaged, untracked), like sff deploy --changed.",
 		Example: `  sff test -n MyTest
   sff test -n MyTest.testInsert -n OtherTest -c
   sff test -n 'Account*Test' -c
   sff test -n 'Account*Test' --dry-run
+  sff test --changed -c
   sff test -l RunLocalTests --code-coverage
   sff test -n MyTest -c --json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			req, err := buildTestRequest(classNames, testLevel)
+			var req sfapi.ApexTestRequest
+			var err error
+			if changed {
+				req, err = changedTestRequest("")
+			} else {
+				req, err = buildTestRequest(classNames, testLevel)
+			}
 			if err != nil {
 				return err
 			}
@@ -53,9 +64,10 @@ func newTestCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&coverage, "code-coverage", "c", false, "report code coverage of the classes the tests exercised")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the result as JSON")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "resolve the tests to run (expanding * wildcards) and print them without running")
+	cmd.Flags().BoolVar(&changed, "changed", false, "run the test classes changed in the git working tree vs HEAD (staged, unstaged, untracked)")
 	cmd.Flags().IntVarP(&wait, "wait", "w", 0, "minutes to wait for the run to finish (0 = wait indefinitely)")
 	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
-	cmd.MarkFlagsMutuallyExclusive("class-names", "test-level")
+	cmd.MarkFlagsMutuallyExclusive("class-names", "test-level", "changed")
 	addTargetOrgFlag(cmd)
 	return cmd
 }
@@ -102,6 +114,35 @@ func buildTestRequest(classNames []string, level string) (sfapi.ApexTestRequest,
 		if whole[items[i].ClassName] {
 			items[i].TestMethods = nil
 		}
+	}
+	return sfapi.ApexTestRequest{Tests: items}, nil
+}
+
+var isTestRe = regexp.MustCompile(`(?i)@istest\b`)
+
+// changedTestRequest builds a runner request from the @IsTest Apex classes that
+// are added or modified in the git working tree (vs HEAD). Deleted files and
+// non-test classes are skipped. projectDir is where to look for the project
+// ("" = current directory).
+func changedTestRequest(projectDir string) (sfapi.ApexTestRequest, error) {
+	cs, _, err := resolveGitChanges(deploySelection{changed: true, projectDir: projectDir}, "", nil)
+	if err != nil {
+		return sfapi.ApexTestRequest{}, err
+	}
+	var items []sfapi.ApexTestItem
+	for _, p := range cs.Paths {
+		p = strings.TrimSuffix(p, "-meta.xml") // a changed Foo.cls-meta.xml still means class Foo
+		if !strings.HasSuffix(p, ".cls") {
+			continue
+		}
+		data, err := os.ReadFile(p)
+		if err != nil || !isTestRe.Match(data) {
+			continue
+		}
+		items = append(items, sfapi.ApexTestItem{ClassName: strings.TrimSuffix(filepath.Base(p), ".cls")})
+	}
+	if len(items) == 0 {
+		return sfapi.ApexTestRequest{}, fmt.Errorf("no changed Apex test classes (@IsTest) found in the git working tree")
 	}
 	return sfapi.ApexTestRequest{Tests: items}, nil
 }
