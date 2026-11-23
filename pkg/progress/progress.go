@@ -131,6 +131,19 @@ func (p *Progress) beat() {
 	}
 }
 
+// Print writes text to out (typically stdout) without corrupting the spinner:
+// on a TTY the spinner line is erased first and redrawn on its next frame.
+func (p *Progress) Print(out io.Writer, text string) {
+	if p.sp != nil {
+		p.sp.Lock()
+		fmt.Fprint(p.w, "\r\033[K")
+		fmt.Fprint(out, text)
+		p.sp.Unlock()
+		return
+	}
+	fmt.Fprint(out, text)
+}
+
 // Stop halts the animation (clearing the spinner line on a TTY) or the heartbeat
 // loop on a non-TTY. It is safe to call once from any goroutine; further calls
 // are no-ops.

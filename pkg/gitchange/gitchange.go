@@ -132,6 +132,16 @@ func gitOut(dir string, args ...string) ([]byte, error) {
 // working-tree change, or at the commit's first parent when commit is set. ok is
 // false when the file did not exist there (added, or a root commit).
 func ShowOld(dir, commit, absPath string) (data []byte, ok bool) {
+	rev := "HEAD"
+	if commit != "" {
+		rev = commit + "^"
+	}
+	return ShowAt(dir, rev, absPath)
+}
+
+// ShowAt returns the content absPath has at the given revision. ok is false when
+// the file does not exist there.
+func ShowAt(dir, rev, absPath string) (data []byte, ok bool) {
 	top, err := toplevel(dir)
 	if err != nil {
 		return nil, false
@@ -139,10 +149,6 @@ func ShowOld(dir, commit, absPath string) (data []byte, ok bool) {
 	rel, err := filepath.Rel(top, absPath)
 	if err != nil {
 		return nil, false
-	}
-	rev := "HEAD"
-	if commit != "" {
-		rev = commit + "^"
 	}
 	out, err := gitOut(top, "show", rev+":"+filepath.ToSlash(rel))
 	if err != nil {

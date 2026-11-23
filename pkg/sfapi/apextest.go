@@ -52,10 +52,25 @@ type ApexTestRun struct {
 	Duration time.Duration     `json:"-"`
 }
 
+// ApexTestHooks are optional callbacks fired while a test run progresses.
+type ApexTestHooks struct {
+	// Progress receives short status strings ("2/6 class(es) done").
+	Progress func(state string)
+	// Queued is called once with the class names of the queued run, as soon as
+	// the runner reports them.
+	Queued func(classes []string)
+	// ClassDone is called as soon as a class finishes, with its method
+	// outcomes sorted by method name (empty if the class failed to run).
+	ClassDone func(className string, tests []ApexTestOutcome)
+}
+
 // RunApexTests enqueues tests via the Tooling API (runTestsAsynchronous), polls
 // until every queue item is finished, and returns the per-method outcomes.
-// progress, when non-nil, receives short status strings.
-func (c *Client) RunApexTests(ctx context.Context, req ApexTestRequest, progress func(state string)) (*ApexTestRun, error) {
+// hooks may be nil; its callbacks run on the calling goroutine.
+func (c *Client) RunApexTests(ctx context.Context, req ApexTestRequest, hooks *ApexTestHooks) (*ApexTestRun, error) {
+	if hooks == nil {
+		hooks = &ApexTestHooks{}
+	}
 	start := time.Now()
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -75,18 +90,25 @@ func (c *Client) RunApexTests(ctx context.Context, req ApexTestRequest, progress
 	}
 
 	run := &ApexTestRun{JobID: jobID}
+	handled := map[string]bool{} // queue item ids already reported
+	queued := false
 	for delay := time.Second; ; {
 		recs, _, err := c.QueryTooling(ctx, fmt.Sprintf(
-			"SELECT Status, ExtendedStatus, ApexClass.Name FROM ApexTestQueueItem WHERE ParentJobId = '%s'", jobID))
+			"SELECT Id, Status, ExtendedStatus, ApexClassId, ApexClass.Name FROM ApexTestQueueItem WHERE ParentJobId = '%s'", jobID))
 		if err != nil {
 			return nil, err
 		}
 		done, total := 0, len(recs)
 		run.Errors = run.Errors[:0]
+		var names []string
+		var fresh []string               // class ids that just completed
+		freshName := map[string]string{} // class id -> name
 		for _, r := range recs {
 			var q struct {
+				ID             string `json:"Id"`
 				Status         string `json:"Status"`
 				ExtendedStatus string `json:"ExtendedStatus"`
+				ApexClassID    string `json:"ApexClassId"`
 				ApexClass      struct {
 					Name string `json:"Name"`
 				} `json:"ApexClass"`
@@ -94,9 +116,15 @@ func (c *Client) RunApexTests(ctx context.Context, req ApexTestRequest, progress
 			if err := json.Unmarshal(r, &q); err != nil {
 				return nil, err
 			}
+			names = append(names, q.ApexClass.Name)
 			switch q.Status {
 			case "Completed":
 				done++
+				if !handled[q.ID] {
+					handled[q.ID] = true
+					fresh = append(fresh, q.ApexClassID)
+					freshName[q.ApexClassID] = q.ApexClass.Name
+				}
 			case "Failed", "Aborted":
 				done++
 				msg := q.Status
@@ -106,8 +134,46 @@ func (c *Client) RunApexTests(ctx context.Context, req ApexTestRequest, progress
 				run.Errors = append(run.Errors, q.ApexClass.Name+" — "+msg)
 			}
 		}
-		if progress != nil {
-			progress(fmt.Sprintf("%d/%d class(es) done", done, total))
+		if !queued && total > 0 {
+			queued = true
+			sort.Strings(names)
+			if hooks.Queued != nil {
+				hooks.Queued(names)
+			}
+		}
+		if len(fresh) > 0 {
+			byClass := map[string][]ApexTestOutcome{}
+			for _, chunk := range chunkStrings(uniqueStrings(fresh), 100) {
+				outs, err := c.fetchTestResults(ctx, jobID, chunk)
+				if err != nil {
+					return nil, err
+				}
+				for _, o := range outs {
+					byClass[o.ClassID] = append(byClass[o.ClassID], o)
+				}
+			}
+			sort.Slice(fresh, func(i, j int) bool { return freshName[fresh[i]] < freshName[fresh[j]] })
+			for _, id := range fresh {
+				tests := byClass[id]
+				sort.Slice(tests, func(i, j int) bool { return tests[i].Method < tests[j].Method })
+				for _, t := range tests {
+					switch t.Outcome {
+					case "Pass":
+						run.Passed++
+					case "Skip":
+						run.Skipped++
+					default:
+						run.Failed++
+					}
+				}
+				run.Tests = append(run.Tests, tests...)
+				if hooks.ClassDone != nil {
+					hooks.ClassDone(freshName[id], tests)
+				}
+			}
+		}
+		if hooks.Progress != nil {
+			hooks.Progress(fmt.Sprintf("%d/%d class(es) done", done, total))
 		}
 		if total > 0 && done == total {
 			break
@@ -122,11 +188,27 @@ func (c *Client) RunApexTests(ctx context.Context, req ApexTestRequest, progress
 		}
 	}
 
+	sort.Slice(run.Tests, func(i, j int) bool {
+		a, b := run.Tests[i], run.Tests[j]
+		if a.ClassName != b.ClassName {
+			return a.ClassName < b.ClassName
+		}
+		return a.Method < b.Method
+	})
+	run.Duration = time.Since(start)
+	return run, nil
+}
+
+// fetchTestResults returns the ApexTestResult rows of the given test classes
+// within one run.
+func (c *Client) fetchTestResults(ctx context.Context, jobID string, classIDs []string) ([]ApexTestOutcome, error) {
 	recs, _, err := c.QueryTooling(ctx, fmt.Sprintf(
-		"SELECT ApexClassId, ApexClass.Name, MethodName, Outcome, Message, StackTrace, RunTime FROM ApexTestResult WHERE AsyncApexJobId = '%s'", jobID))
+		"SELECT ApexClassId, ApexClass.Name, MethodName, Outcome, Message, StackTrace, RunTime FROM ApexTestResult WHERE AsyncApexJobId = '%s' AND ApexClassId IN (%s)",
+		jobID, quoteList(classIDs)))
 	if err != nil {
 		return nil, err
 	}
+	var out []ApexTestOutcome
 	for _, r := range recs {
 		var t struct {
 			ApexClassID string `json:"ApexClassId"`
@@ -142,28 +224,12 @@ func (c *Client) RunApexTests(ctx context.Context, req ApexTestRequest, progress
 		if err := json.Unmarshal(r, &t); err != nil {
 			return nil, err
 		}
-		run.Tests = append(run.Tests, ApexTestOutcome{
+		out = append(out, ApexTestOutcome{
 			ClassID: t.ApexClassID, ClassName: t.ApexClass.Name, Method: t.MethodName,
 			Outcome: t.Outcome, Message: t.Message, StackTrace: t.StackTrace, RunTimeMs: int(t.RunTime),
 		})
-		switch t.Outcome {
-		case "Pass":
-			run.Passed++
-		case "Skip":
-			run.Skipped++
-		default:
-			run.Failed++
-		}
 	}
-	sort.Slice(run.Tests, func(i, j int) bool {
-		a, b := run.Tests[i], run.Tests[j]
-		if a.ClassName != b.ClassName {
-			return a.ClassName < b.ClassName
-		}
-		return a.Method < b.Method
-	})
-	run.Duration = time.Since(start)
-	return run, nil
+	return out, nil
 }
 
 // ApexCoverage returns the aggregate line coverage of every class/trigger

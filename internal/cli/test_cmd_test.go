@@ -67,11 +67,25 @@ func TestChangedTestRequest(t *testing.T) {
 	write(cls+"FooTest.cls-meta.xml", meta)
 	write(cls+"Foo.cls", "public class Foo {}")
 	write(cls+"Foo.cls-meta.xml", meta)
-	req, err := changedTestRequest(dir)
+	req, err := changedTestRequest(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(req.Tests) != 1 || req.Tests[0].ClassName != "FooTest" {
 		t.Fatalf("got %+v", req.Tests)
+	}
+
+	// The same changes, once committed, are selectable by --commit.
+	run("add", ".")
+	run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "add tests")
+	req, err = changedTestRequest(dir, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Tests) != 1 || req.Tests[0].ClassName != "FooTest" {
+		t.Fatalf("commit: got %+v", req.Tests)
+	}
+	if _, err := changedTestRequest(dir, "HEAD~1"); err == nil {
+		t.Fatal("init commit has no test classes; want error")
 	}
 }

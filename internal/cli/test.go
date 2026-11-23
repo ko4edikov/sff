@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,12 +15,14 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ko4edikov/sff/pkg/auth"
+	"github.com/ko4edikov/sff/pkg/gitchange"
 	"github.com/ko4edikov/sff/pkg/progress"
 	"github.com/ko4edikov/sff/pkg/sfapi"
 )
 
 func newTestCmd() *cobra.Command {
 	var classNames []string
+	var commit string
 	var testLevel, apiVersion string
 	var coverage, asJSON, dryRun, changed bool
 	var wait int
@@ -33,20 +36,22 @@ func newTestCmd() *cobra.Command {
 			"Add -c/--code-coverage to list line coverage of every class and trigger the\n" +
 			"tests exercised, plus the org-wide percentage. Exits 1 if any test fails.\n\n" +
 			"Use --changed to run the test classes (@IsTest) added or modified in the git\n" +
-			"working tree vs HEAD (staged, unstaged, untracked), like sff deploy --changed.",
+			"working tree vs HEAD (staged, unstaged, untracked), like sff deploy --changed, or\n" +
+			"--commit <sha> for the test classes one commit added or modified.",
 		Example: `  sff test -n MyTest
   sff test -n MyTest.testInsert -n OtherTest -c
   sff test -n 'Account*Test' -c
   sff test -n 'Account*Test' --dry-run
   sff test --changed -c
+  sff test --commit HEAD~1 -c
   sff test -l RunLocalTests --code-coverage
   sff test -n MyTest -c --json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var req sfapi.ApexTestRequest
 			var err error
-			if changed {
-				req, err = changedTestRequest("")
+			if changed || commit != "" {
+				req, err = changedTestRequest("", commit)
 			} else {
 				req, err = buildTestRequest(classNames, testLevel)
 			}
@@ -67,7 +72,8 @@ func newTestCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&changed, "changed", false, "run the test classes changed in the git working tree vs HEAD (staged, unstaged, untracked)")
 	cmd.Flags().IntVarP(&wait, "wait", "w", 0, "minutes to wait for the run to finish (0 = wait indefinitely)")
 	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
-	cmd.MarkFlagsMutuallyExclusive("class-names", "test-level", "changed")
+	cmd.Flags().StringVar(&commit, "commit", "", "run the test classes (@IsTest) a git commit added or modified (vs its first parent)")
+	cmd.MarkFlagsMutuallyExclusive("class-names", "test-level", "changed", "commit")
 	addTargetOrgFlag(cmd)
 	return cmd
 }
@@ -123,9 +129,10 @@ var isTestRe = regexp.MustCompile(`(?i)@istest\b`)
 // changedTestRequest builds a runner request from the @IsTest Apex classes that
 // are added or modified in the git working tree (vs HEAD). Deleted files and
 // non-test classes are skipped. projectDir is where to look for the project
-// ("" = current directory).
-func changedTestRequest(projectDir string) (sfapi.ApexTestRequest, error) {
-	cs, _, err := resolveGitChanges(deploySelection{changed: true, projectDir: projectDir}, "", nil)
+// ("" = current directory). With commit set, the commit's own changes are used
+// (and @IsTest is checked against the file as of that commit).
+func changedTestRequest(projectDir, commit string) (sfapi.ApexTestRequest, error) {
+	cs, _, err := resolveGitChanges(deploySelection{changed: commit == "", commit: commit, projectDir: projectDir}, "", nil)
 	if err != nil {
 		return sfapi.ApexTestRequest{}, err
 	}
@@ -135,14 +142,22 @@ func changedTestRequest(projectDir string) (sfapi.ApexTestRequest, error) {
 		if !strings.HasSuffix(p, ".cls") {
 			continue
 		}
-		data, err := os.ReadFile(p)
-		if err != nil || !isTestRe.Match(data) {
+		var data []byte
+		if commit != "" {
+			var ok bool
+			if data, ok = gitchange.ShowAt(filepath.Dir(p), commit, p); !ok {
+				continue
+			}
+		} else if data, err = os.ReadFile(p); err != nil {
+			continue
+		}
+		if !isTestRe.Match(data) {
 			continue
 		}
 		items = append(items, sfapi.ApexTestItem{ClassName: strings.TrimSuffix(filepath.Base(p), ".cls")})
 	}
 	if len(items) == 0 {
-		return sfapi.ApexTestRequest{}, fmt.Errorf("no changed Apex test classes (@IsTest) found in the git working tree")
+		return sfapi.ApexTestRequest{}, fmt.Errorf("no changed Apex test classes (@IsTest) found in the git change set")
 	}
 	return sfapi.ApexTestRequest{Tests: items}, nil
 }
@@ -277,9 +292,28 @@ func runTests(ctx context.Context, req sfapi.ApexTestRequest, apiVersion string,
 	}
 
 	prog := progress.Start("running tests")
-	run, err := client.RunApexTests(ctx, req, func(state string) {
-		prog.Update("running tests — " + state)
-	})
+	hooks := &sfapi.ApexTestHooks{
+		Progress: func(state string) { prog.Update("running tests — " + state) },
+	}
+	streamed := !asJSON
+	if streamed {
+		hooks.Queued = func(classes []string) {
+			var b strings.Builder
+			fmt.Fprintf(&b, "Running %d test class(es):\n", len(classes))
+			for _, c := range classes {
+				fmt.Fprintf(&b, "  %s\n", c)
+			}
+			prog.Print(os.Stdout, b.String())
+		}
+		hooks.ClassDone = func(_ string, tests []sfapi.ApexTestOutcome) {
+			var b strings.Builder
+			for _, t := range tests {
+				writeTestLine(&b, t)
+			}
+			prog.Print(os.Stdout, b.String())
+		}
+	}
+	run, err := client.RunApexTests(ctx, req, hooks)
 	if err == nil && coverage {
 		prog.Update("collecting code coverage")
 	}
@@ -314,7 +348,7 @@ func runTests(ctx context.Context, req sfapi.ApexTestRequest, apiVersion string,
 			return err
 		}
 	} else {
-		printTestRun(out)
+		printTestRun(out, !streamed)
 	}
 	if failed {
 		return &ExitError{Code: 1}
@@ -322,25 +356,35 @@ func runTests(ctx context.Context, req sfapi.ApexTestRequest, apiVersion string,
 	return nil
 }
 
-func printTestRun(out testOutput) {
-	run := out.ApexTestRun
-	for _, t := range run.Tests {
-		mark := "✔"
-		switch t.Outcome {
-		case "Pass":
-		case "Skip":
-			mark = "-"
-		default:
-			mark = "✘"
+// writeTestLine renders one test outcome: mark, right-aligned run time, name;
+// failures are followed by the indented message and stack trace.
+func writeTestLine(w io.Writer, t sfapi.ApexTestOutcome) {
+	mark := "✔"
+	switch t.Outcome {
+	case "Pass":
+	case "Skip":
+		mark = "-"
+	default:
+		mark = "✘"
+	}
+	fmt.Fprintf(w, "%s %6d ms  %s.%s\n", mark, t.RunTimeMs, t.ClassName, t.Method)
+	if mark == "✘" {
+		if t.Message != "" {
+			fmt.Fprintf(w, "    %s\n", strings.ReplaceAll(strings.TrimSpace(t.Message), "\n", "\n    "))
 		}
-		fmt.Printf("%s %s.%s (%d ms)\n", mark, t.ClassName, t.Method, t.RunTimeMs)
-		if mark == "✘" {
-			if t.Message != "" {
-				fmt.Printf("    %s\n", strings.ReplaceAll(strings.TrimSpace(t.Message), "\n", "\n    "))
-			}
-			if t.StackTrace != "" {
-				fmt.Printf("    %s\n", strings.ReplaceAll(strings.TrimSpace(t.StackTrace), "\n", "\n    "))
-			}
+		if t.StackTrace != "" {
+			fmt.Fprintf(w, "    %s\n", strings.ReplaceAll(strings.TrimSpace(t.StackTrace), "\n", "\n    "))
+		}
+	}
+}
+
+// printTestRun prints the final report. withTests is false when the per-method
+// lines were already streamed while the run progressed.
+func printTestRun(out testOutput, withTests bool) {
+	run := out.ApexTestRun
+	if withTests {
+		for _, t := range run.Tests {
+			writeTestLine(os.Stdout, t)
 		}
 	}
 	for _, e := range run.Errors {
