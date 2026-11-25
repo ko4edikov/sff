@@ -121,15 +121,22 @@ func runRetrieve(ctx context.Context, metadata []string, manifest, outputDir, so
 		if dryRun {
 			return printEntries(os.Stdout, sel.Entries, false)
 		}
-		prog = progress.StartAt(start, "retrieving")
 		pkg = packageFromEntries(sel.Entries, apiVersion)
+		printComponentList(os.Stdout, fmt.Sprintf("retrieving %d component(s) from %s:", componentCount(pkg), org.Username), packageItems(pkg), nil)
+		prog = progress.StartAt(start, "retrieving")
 	} else {
+		expanded := hasPatterns(pkg)
 		if err := client.ExpandGlobs(ctx, pkg); err != nil {
 			return err
 		}
 		if dryRun {
 			prog.Stop()
 			return printEntries(os.Stdout, entriesFromPackage(pkg), false)
+		}
+		if expanded { // explicit -m Type:Name needs no echo; patterns/wildcards do
+			prog.Stop()
+			printComponentList(os.Stdout, fmt.Sprintf("retrieving %d component(s) from %s:", componentCount(pkg), org.Username), packageItems(pkg), nil)
+			prog = progress.StartAt(start, "resolving project")
 		}
 	}
 
@@ -226,4 +233,17 @@ func entriesFromPackage(pkg *mdapi.Package) []modEntry {
 		}
 	}
 	return out
+}
+
+// hasPatterns reports whether the manifest uses wildcards or whole-type members
+// that ExpandGlobs will resolve to concrete names.
+func hasPatterns(pkg *mdapi.Package) bool {
+	for _, t := range pkg.Types {
+		for _, m := range t.Members {
+			if strings.ContainsAny(m, "*?") {
+				return true
+			}
+		}
+	}
+	return false
 }

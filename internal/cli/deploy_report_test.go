@@ -29,3 +29,26 @@ func TestPrintDeploySuccesses(t *testing.T) {
 		t.Errorf("not sorted:\n%s", out)
 	}
 }
+
+func TestPrintComponentList(t *testing.T) {
+	var b strings.Builder
+	printComponentList(&b, "deploying 2:", []string{"ApexClass:A", "ApexClass:B"}, []string{"ApexClass:Old"})
+	want := "deploying 2:\n  ApexClass:A\n  ApexClass:B\ndeleting 1 component(s):\n  ApexClass:Old\n"
+	if b.String() != want {
+		t.Fatalf("got %q", b.String())
+	}
+	var big []string
+	for i := 0; i < componentListMax+1; i++ {
+		big = append(big, "ApexClass:X")
+	}
+	b.Reset()
+	printComponentList(&b, "h", big, nil)
+	if !strings.Contains(b.String(), "ApexClass") || strings.Contains(b.String(), "ApexClass:X") {
+		t.Fatalf("expected collapsed counts, got %q", b.String())
+	}
+	b.Reset()
+	printComponentList(&b, "h", nil, nil)
+	if b.Len() != 0 {
+		t.Fatal("empty list must print nothing")
+	}
+}

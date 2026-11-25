@@ -196,12 +196,16 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 		entries["package.xml"] = pkgXML
 	}
 
+	verb := "deploying"
+	if opts.CheckOnly {
+		verb = "validating"
+	}
+	header := fmt.Sprintf("%s %d component(s) to %s:", verb, componentCount(pkg), org.Username)
 	if dryRun {
-		fmt.Printf("would deploy %d component(s) and delete %d:\n\n", componentCount(pkg), componentCount(destroy))
-		fmt.Print(string(pkgXML))
-		if destroyXML != nil {
-			fmt.Printf("\ndestructiveChangesPost.xml:\n%s", destroyXML)
-		}
+		header = fmt.Sprintf("would deploy %d component(s) to %s:", componentCount(pkg), org.Username)
+	}
+	printComponentList(os.Stdout, header, packageItems(pkg), packageItems(destroy))
+	if dryRun {
 		return nil
 	}
 
@@ -210,10 +214,6 @@ func runDeploy(ctx context.Context, sel deploySelection, apiVersion string, dryR
 		return err
 	}
 
-	verb := "deploying"
-	if opts.CheckOnly {
-		verb = "validating"
-	}
 	start := time.Now()
 	res, err := deployWithProgress(ctx, client, org, zipBytes, opts, verb, wait)
 	if err != nil {
@@ -414,22 +414,25 @@ func runToolingDeploy(ctx context.Context, sel deploySelection, apiVersion strin
 		return fmt.Errorf("--check-only cannot be used with static resources, Aura, or LWC (the Tooling API has no validate-only mode for them); drop --check-only or deploy them via the Metadata API")
 	}
 
+	var items []string
+	for _, c := range in.Apex {
+		items = append(items, c.Type+":"+c.Name)
+	}
+	for _, c := range in.Static {
+		items = append(items, "StaticResource:"+c.Name)
+	}
+	for _, c := range in.Aura {
+		items = append(items, fmt.Sprintf("AuraDefinitionBundle:%s", c.Name))
+	}
+	for _, c := range in.Lwc {
+		items = append(items, fmt.Sprintf("LightningComponentBundle:%s", c.Name))
+	}
+	sort.Strings(items)
 	if dryRun {
-		fmt.Printf("would deploy %d component(s) via the Tooling API:\n", total)
-		for _, c := range in.Apex {
-			fmt.Printf("  %s:%s\n", c.Type, c.Name)
-		}
-		for _, s := range in.Static {
-			fmt.Printf("  StaticResource:%s\n", s.Name)
-		}
-		for _, a := range in.Aura {
-			fmt.Printf("  AuraDefinitionBundle:%s (%d file(s))\n", a.Name, len(a.Files))
-		}
-		for _, l := range in.Lwc {
-			fmt.Printf("  LightningComponentBundle:%s (%d file(s))\n", l.Name, len(l.Files))
-		}
+		printComponentList(os.Stdout, fmt.Sprintf("would deploy %d component(s) via the Tooling API to %s:", total, org.Username), items, nil)
 		return nil
 	}
+	printComponentList(os.Stdout, fmt.Sprintf("deploying %d component(s) via the Tooling API to %s:", total, org.Username), items, nil)
 
 	if wait > 0 {
 		var cancel context.CancelFunc

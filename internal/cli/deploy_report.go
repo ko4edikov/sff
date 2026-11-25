@@ -75,3 +75,60 @@ func printDeployRows(w io.Writer, rows []deployRow) {
 	}
 	tw.Flush()
 }
+
+// componentListMax is how many components printComponentList spells out before
+// it collapses the list to per-type counts.
+const componentListMax = 50
+
+// packageItems flattens a manifest into sorted "Type:Name" strings.
+func packageItems(pkg *mdapi.Package) []string {
+	if pkg == nil {
+		return nil
+	}
+	var items []string
+	for _, t := range pkg.Types {
+		for _, m := range t.Members {
+			items = append(items, t.Name+":"+m)
+		}
+	}
+	sort.Strings(items)
+	return items
+}
+
+// printComponentList prints header followed by the components, one Type:Name per
+// line (sorted). Past componentListMax it collapses to per-type counts so a big
+// --changed/--commit selection stays readable. Nothing is printed for an empty
+// list. destroy items, if any, are listed after under "deleting".
+func printComponentList(w io.Writer, header string, items, destroy []string) {
+	if len(items) == 0 && len(destroy) == 0 {
+		return
+	}
+	fmt.Fprintln(w, header)
+	printItemBlock(w, items)
+	if len(destroy) > 0 {
+		fmt.Fprintf(w, "deleting %d component(s):\n", len(destroy))
+		printItemBlock(w, destroy)
+	}
+}
+
+func printItemBlock(w io.Writer, items []string) {
+	if len(items) <= componentListMax {
+		for _, it := range items {
+			fmt.Fprintf(w, "  %s\n", it)
+		}
+		return
+	}
+	counts := map[string]int{}
+	var types []string
+	for _, it := range items {
+		t, _, _ := strings.Cut(it, ":")
+		if counts[t] == 0 {
+			types = append(types, t)
+		}
+		counts[t]++
+	}
+	sort.Strings(types)
+	for _, t := range types {
+		fmt.Fprintf(w, "  %-28s %d\n", t, counts[t])
+	}
+}
