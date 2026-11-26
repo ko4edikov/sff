@@ -73,7 +73,9 @@ type ApexTestRun struct {
 	// SetupTimeMs and TestTimeMs come from ApexTestRunResult (TestTime falls
 	// back to the sum of the method run times when unavailable).
 	SetupTimeMs int `json:"setupTimeMs"`
-	TestTimeMs  int `json:"testTimeMs"`
+	// Status is the run's ApexTestRunResult status; only GetApexTestRun sets it.
+	Status     string `json:"status,omitempty"`
+	TestTimeMs int    `json:"testTimeMs"`
 }
 
 // ApexTestHooks are optional callbacks fired while a test run progresses.
@@ -219,6 +221,97 @@ func (c *Client) RunApexTests(ctx context.Context, req ApexTestRequest, hooks *A
 		}
 		return a.Method < b.Method
 	})
+	c.fillRunTimes(ctx, run)
+	run.Duration = time.Since(start)
+	return run, nil
+}
+
+// GetApexTestRun loads a finished (or still running) test run by its
+// AsyncApexJob Id — the "Test Run Id" printed by RunApexTests — the way
+// `sf apex get test -i` does. Status tells whether it is still in progress.
+func (c *Client) GetApexTestRun(ctx context.Context, jobID string) (*ApexTestRun, error) {
+	jobID = strings.ReplaceAll(strings.TrimSpace(jobID), "'", "")
+	if jobID == "" {
+		return nil, fmt.Errorf("empty test run Id")
+	}
+	start := time.Now()
+	run := &ApexTestRun{JobID: jobID}
+	recs, _, err := c.QueryTooling(ctx, "SELECT Status FROM ApexTestRunResult WHERE AsyncApexJobId = '"+jobID+"'")
+	if err != nil {
+		return nil, err
+	}
+	if len(recs) == 0 {
+		return nil, fmt.Errorf("no Apex test run with Id %s in this org", jobID)
+	}
+	var st struct {
+		Status string `json:"Status"`
+	}
+	if err := json.Unmarshal(recs[0], &st); err != nil {
+		return nil, err
+	}
+	run.Status = st.Status
+
+	recs, _, err = c.QueryTooling(ctx, "SELECT Status, ExtendedStatus, ApexClassId, ApexClass.Name FROM ApexTestQueueItem WHERE ParentJobId = '"+jobID+"'")
+	if err != nil {
+		return nil, err
+	}
+	var classIDs []string
+	for _, r := range recs {
+		var q struct {
+			Status         string `json:"Status"`
+			ExtendedStatus string `json:"ExtendedStatus"`
+			ApexClassID    string `json:"ApexClassId"`
+			ApexClass      struct {
+				Name string `json:"Name"`
+			} `json:"ApexClass"`
+		}
+		if err := json.Unmarshal(r, &q); err != nil {
+			return nil, err
+		}
+		switch q.Status {
+		case "Completed":
+			classIDs = append(classIDs, q.ApexClassID)
+		case "Failed", "Aborted":
+			msg := q.Status
+			if q.ExtendedStatus != "" {
+				msg += ": " + q.ExtendedStatus
+			}
+			run.Errors = append(run.Errors, q.ApexClass.Name+" — "+msg)
+		}
+	}
+	for _, chunk := range chunkStrings(uniqueStrings(classIDs), 100) {
+		outs, err := c.fetchTestResults(ctx, jobID, chunk)
+		if err != nil {
+			return nil, err
+		}
+		run.Tests = append(run.Tests, outs...)
+	}
+	sort.Slice(run.Tests, func(i, j int) bool {
+		a, b := run.Tests[i], run.Tests[j]
+		if a.ClassName != b.ClassName {
+			return a.ClassName < b.ClassName
+		}
+		return a.Method < b.Method
+	})
+	for _, t := range run.Tests {
+		switch t.Outcome {
+		case "Pass":
+			run.Passed++
+		case "Skip":
+			run.Skipped++
+		default:
+			run.Failed++
+		}
+	}
+	c.fillRunTimes(ctx, run)
+	run.Duration = time.Since(start)
+	return run, nil
+}
+
+// fillRunTimes sets run.TestTimeMs/SetupTimeMs: the sum of the method run
+// times, overridden by ApexTestRunResult when it has them (best effort).
+func (c *Client) fillRunTimes(ctx context.Context, run *ApexTestRun) {
+	jobID := run.JobID
 	run.TestTimeMs = 0
 	for _, t := range run.Tests {
 		run.TestTimeMs += t.RunTimeMs
@@ -243,8 +336,6 @@ func (c *Client) RunApexTests(ctx context.Context, req ApexTestRequest, hooks *A
 			break
 		}
 	}
-	run.Duration = time.Since(start)
-	return run, nil
 }
 
 // fetchTestResults returns the ApexTestResult rows of the given test classes

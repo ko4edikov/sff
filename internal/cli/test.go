@@ -82,6 +82,7 @@ func newTestCmd() *cobra.Command {
 	cmd.Flags().IntVarP(&wait, "wait", "w", 0, "minutes to wait for the run to finish (0 = wait indefinitely)")
 	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
 	cmd.Flags().StringVar(&commit, "commit", "", "run the test classes (@IsTest) a git commit added or modified (vs its first parent)")
+	cmd.AddCommand(newTestReportCmd())
 	cmd.MarkFlagsMutuallyExclusive("class-names", "test-level", "changed", "commit")
 	addTargetOrgFlag(cmd)
 	return cmd
@@ -331,21 +332,7 @@ func runTests(ctx context.Context, req sfapi.ApexTestRequest, apiVersion string,
 	if err == nil {
 		out.ApexTestRun = run
 		if rep.Coverage {
-			names := map[string]string{}
-			for _, t := range run.Tests {
-				names[t.ClassID] = t.ClassName
-			}
-			var cr *sfapi.ApexCoverageReport
-			cr, err = client.ApexCoverage(ctx, names)
-			if cr != nil {
-				out.Coverage = cr.Classes
-				if rep.Detailed {
-					out.PerTestCoverage = cr.PerTest
-				}
-				if cr.OrgWide >= 0 {
-					out.OrgWideCoverage = &cr.OrgWide
-				}
-			}
+			err = addCoverage(ctx, client, &out, rep)
 		}
 	}
 	prog.Stop()
@@ -356,7 +343,32 @@ func runTests(ctx context.Context, req sfapi.ApexTestRequest, apiVersion string,
 		return err
 	}
 
-	failed := run.Failed > 0 || len(run.Errors) > 0
+	return emitTestOutput(out, rep, org, asJSON)
+}
+
+// addCoverage fetches the coverage tables the report asked for into out.
+func addCoverage(ctx context.Context, client *sfapi.Client, out *testOutput, rep testReport) error {
+	names := map[string]string{}
+	for _, t := range out.Tests {
+		names[t.ClassID] = t.ClassName
+	}
+	cr, err := client.ApexCoverage(ctx, names)
+	if cr != nil {
+		out.Coverage = cr.Classes
+		if rep.Detailed {
+			out.PerTestCoverage = cr.PerTest
+		}
+		if cr.OrgWide >= 0 {
+			out.OrgWideCoverage = &cr.OrgWide
+		}
+	}
+	return err
+}
+
+// emitTestOutput prints the report (JSON or tables); the exit code is 1 when
+// any test failed.
+func emitTestOutput(out testOutput, rep testReport, org *auth.Org, asJSON bool) error {
+	run := out.ApexTestRun
 	if asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -366,10 +378,81 @@ func runTests(ctx context.Context, req sfapi.ApexTestRequest, apiVersion string,
 	} else {
 		printTestRun(os.Stdout, out, rep, org, termWidth())
 	}
-	if failed {
+	if run.Failed > 0 || len(run.Errors) > 0 {
 		return &ExitError{Code: 1}
 	}
 	return nil
+}
+
+func newTestReportCmd() *cobra.Command {
+	var runID, apiVersion string
+	var coverage, detailed, concise, asJSON bool
+	cmd := &cobra.Command{
+		Use:   "report [test-run-id]",
+		Short: "Show the results of a past Apex test run by its Test Run Id",
+		Long: "Print the report of an earlier test run (the \"Test Run Id\" from `sff test`, a\n" +
+			"707… AsyncApexJob Id) in the same tables as `sff test`, like sf apex get test.\n" +
+			"-c/--code-coverage adds coverage, --detailed-coverage per-test coverage,\n" +
+			"--concise keeps only failures and the summary. Exits 1 if any test failed.\n\n" +
+			"Note: coverage is read from the org's current ApexCodeCoverage data, which later\n" +
+			"test runs overwrite, so it may not match what that run produced.",
+		Example: `  sff test report 707G500001dI7V4
+  sff test report -i 707G500001dI7V4 -c
+  sff test report 707G500001dI7V4 -c --detailed-coverage
+  sff test report 707G500001dI7V4 --concise --json`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				if runID != "" && runID != args[0] {
+					return fmt.Errorf("pass the Test Run Id once, either as an argument or with -i")
+				}
+				runID = args[0]
+			}
+			if runID == "" {
+				return fmt.Errorf("specify a Test Run Id (argument or -i)")
+			}
+			if detailed && !coverage {
+				return fmt.Errorf("--detailed-coverage requires -c/--code-coverage")
+			}
+			return runTestReport(cmd.Context(), runID, apiVersion, testReport{Coverage: coverage, Detailed: detailed, Concise: concise}, asJSON)
+		},
+	}
+	cmd.Flags().StringVarP(&runID, "test-run-id", "i", "", "Test Run Id (707…)")
+	cmd.Flags().BoolVarP(&coverage, "code-coverage", "c", false, "report code coverage of the classes the tests exercised")
+	cmd.Flags().BoolVar(&detailed, "detailed-coverage", false, "with -c: also show, per test method, the coverage it achieved on each class")
+	cmd.Flags().BoolVar(&concise, "concise", false, "print only failing tests (and the summary)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the result as JSON")
+	cmd.Flags().StringVar(&apiVersion, "api-version", "", apiVersionUsage)
+	addTargetOrgFlag(cmd)
+	return cmd
+}
+
+func runTestReport(ctx context.Context, runID, apiVersion string, rep testReport, asJSON bool) error {
+	org, err := auth.Resolve(targetOrg)
+	if err != nil {
+		return err
+	}
+	apiVersion = resolveAPIVersion(ctx, apiVersion, "", org)
+	client := sfapi.New(org)
+	if v := strings.TrimPrefix(apiVersion, "v"); v != "" {
+		client.APIVersion = "v" + v
+	}
+	prog := progress.Start("loading test run")
+	run, err := client.GetApexTestRun(ctx, runID)
+	out := testOutput{ApexTestRun: run}
+	if err == nil && rep.Coverage {
+		prog.Update("collecting code coverage")
+		err = addCoverage(ctx, client, &out, rep)
+	}
+	prog.Stop()
+	if err != nil {
+		return err
+	}
+	switch run.Status {
+	case "Queued", "Preparing", "Processing":
+		fmt.Fprintf(os.Stderr, "Test run %s is still %s; showing the results so far.\n", run.JobID, run.Status)
+	}
+	return emitTestOutput(out, rep, org, asJSON)
 }
 
 // pctStr renders a coverage percentage like sf: whole numbers, never "100%"

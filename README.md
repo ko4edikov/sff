@@ -390,6 +390,7 @@ sff test -l RunLocalTests --code-coverage           # all local tests
 sff test -n MyTest -c --detailed-coverage           # + per-test-method coverage per class
 sff test -n MyTest --concise                        # failures + summary only
 sff test -n MyTest --json
+sff test report 707G500001dI7V4 -c                  # re-show a past run by Test Run Id (like sf apex get test)
 sff test -n 'Account*Test' --dry-run                # * wildcards in class names; --dry-run lists the matches
 ```
 
@@ -398,6 +399,10 @@ tables as `sf apex run test` (Test Results, Test Summary). `-c/--code-coverage` 
 "Apex Code Coverage by Class" (percent + uncovered lines, sorted by name) and the
 org-wide percentage; `--detailed-coverage` replaces Test Results with the per-test
 coverage table; `--concise` keeps only failing tests and the summary.
+
+`sff test report <test-run-id>` (or `-i`) prints the same report for an earlier run, with
+the same `-c`, `--detailed-coverage`, `--concise` and `--json` flags. Coverage comes from the
+org's current coverage data, which later runs overwrite, so it may differ from that run's.
 
 ## Manifests from git (`sff manifest`)
 
