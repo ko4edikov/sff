@@ -39,6 +39,26 @@ type ApexClassCoverage struct {
 	LinesCovered   int     `json:"linesCovered"`
 	LinesUncovered int     `json:"linesUncovered"`
 	Percent        float64 `json:"percent"`
+	// UncoveredLines are the line numbers no test executed, ascending.
+	UncoveredLines []int `json:"uncoveredLines,omitempty"`
+}
+
+// ApexTestCoverage is the coverage one test method achieved on one class or
+// trigger (a row of ApexCodeCoverage).
+type ApexTestCoverage struct {
+	TestClass      string  `json:"testClass"`
+	TestMethod     string  `json:"testMethod"`
+	Target         string  `json:"target"` // class or trigger exercised
+	LinesCovered   int     `json:"linesCovered"`
+	LinesUncovered int     `json:"linesUncovered"`
+	Percent        float64 `json:"percent"`
+}
+
+// ApexCoverageReport is the coverage collected for a test run.
+type ApexCoverageReport struct {
+	Classes []ApexClassCoverage `json:"coverage"`
+	PerTest []ApexTestCoverage  `json:"perTestCoverage,omitempty"`
+	OrgWide float64             `json:"-"` // -1 when unavailable
 }
 
 // ApexTestRun is the finished result of a test run.
@@ -50,6 +70,10 @@ type ApexTestRun struct {
 	Skipped  int               `json:"skipped"`
 	Errors   []string          `json:"errors,omitempty"` // queue-level failures (e.g. aborted classes)
 	Duration time.Duration     `json:"-"`
+	// SetupTimeMs and TestTimeMs come from ApexTestRunResult (TestTime falls
+	// back to the sum of the method run times when unavailable).
+	SetupTimeMs int `json:"setupTimeMs"`
+	TestTimeMs  int `json:"testTimeMs"`
 }
 
 // ApexTestHooks are optional callbacks fired while a test run progresses.
@@ -195,6 +219,30 @@ func (c *Client) RunApexTests(ctx context.Context, req ApexTestRequest, hooks *A
 		}
 		return a.Method < b.Method
 	})
+	run.TestTimeMs = 0
+	for _, t := range run.Tests {
+		run.TestTimeMs += t.RunTimeMs
+	}
+	// Best effort: TestSetupTime is missing on older API versions.
+	for _, q := range []string{"SELECT TestTime, TestSetupTime", "SELECT TestTime"} {
+		recs, _, err := c.QueryTooling(ctx, q+" FROM ApexTestRunResult WHERE AsyncApexJobId = '"+jobID+"'")
+		if err != nil || len(recs) == 0 {
+			continue
+		}
+		var r struct {
+			TestTime      *float64 `json:"TestTime"`
+			TestSetupTime *float64 `json:"TestSetupTime"`
+		}
+		if json.Unmarshal(recs[0], &r) == nil {
+			if r.TestTime != nil && *r.TestTime > 0 {
+				run.TestTimeMs = int(*r.TestTime)
+			}
+			if r.TestSetupTime != nil {
+				run.SetupTimeMs = int(*r.TestSetupTime)
+			}
+			break
+		}
+	}
 	run.Duration = time.Since(start)
 	return run, nil
 }
@@ -232,47 +280,79 @@ func (c *Client) fetchTestResults(ctx context.Context, jobID string, classIDs []
 	return out, nil
 }
 
-// ApexCoverage returns the aggregate line coverage of every class/trigger
-// exercised by the given test classes (found via ApexCodeCoverage), sorted by
-// ascending percent, plus the org-wide percentage (-1 when unavailable).
-func (c *Client) ApexCoverage(ctx context.Context, testClassIDs []string) ([]ApexClassCoverage, float64, error) {
-	orgWide := -1.0
+// ApexCoverage returns the aggregate line coverage (with uncovered line
+// numbers) of every class/trigger exercised by the given test classes, sorted
+// by name, the per-test-method coverage, and the org-wide percentage (-1 when
+// unavailable). testClassNames maps a test class id to its name.
+func (c *Client) ApexCoverage(ctx context.Context, testClassNames map[string]string) (*ApexCoverageReport, error) {
+	rep := &ApexCoverageReport{OrgWide: -1}
 	if recs, _, err := c.QueryTooling(ctx, "SELECT PercentCovered FROM ApexOrgWideCoverage"); err == nil && len(recs) > 0 {
 		var o struct {
 			PercentCovered float64 `json:"PercentCovered"`
 		}
 		if json.Unmarshal(recs[0], &o) == nil {
-			orgWide = o.PercentCovered
+			rep.OrgWide = o.PercentCovered
 		}
 	}
 
-	// Classes/triggers touched by the test classes.
+	// Per test method: what it touched (also yields the touched class ids).
 	touched := map[string]bool{}
-	for _, chunk := range chunkStrings(uniqueStrings(testClassIDs), 100) {
-		recs, _, err := c.QueryTooling(ctx, "SELECT ApexClassOrTriggerId FROM ApexCodeCoverage WHERE ApexTestClassId IN ("+quoteList(chunk)+")")
+	testIDs := make([]string, 0, len(testClassNames))
+	for id := range testClassNames {
+		testIDs = append(testIDs, id)
+	}
+	sort.Strings(testIDs)
+	for _, chunk := range chunkStrings(testIDs, 100) {
+		recs, _, err := c.QueryTooling(ctx, "SELECT ApexTestClassId, TestMethodName, ApexClassOrTriggerId, ApexClassOrTrigger.Name, NumLinesCovered, NumLinesUncovered FROM ApexCodeCoverage WHERE ApexTestClassId IN ("+quoteList(chunk)+")")
 		if err != nil {
-			return nil, orgWide, err
+			return rep, err
 		}
 		for _, r := range recs {
 			var x struct {
-				ID string `json:"ApexClassOrTriggerId"`
+				TestClassID string `json:"ApexTestClassId"`
+				Method      string `json:"TestMethodName"`
+				TargetID    string `json:"ApexClassOrTriggerId"`
+				Target      struct {
+					Name string `json:"Name"`
+				} `json:"ApexClassOrTrigger"`
+				Covered   int `json:"NumLinesCovered"`
+				Uncovered int `json:"NumLinesUncovered"`
 			}
-			if json.Unmarshal(r, &x) == nil && x.ID != "" {
-				touched[x.ID] = true
+			if err := json.Unmarshal(r, &x); err != nil {
+				return rep, err
 			}
+			if x.TargetID == "" {
+				continue
+			}
+			touched[x.TargetID] = true
+			t := ApexTestCoverage{TestClass: testClassNames[x.TestClassID], TestMethod: x.Method, Target: x.Target.Name,
+				LinesCovered: x.Covered, LinesUncovered: x.Uncovered}
+			if n := x.Covered + x.Uncovered; n > 0 {
+				t.Percent = float64(x.Covered) * 100 / float64(n)
+			}
+			rep.PerTest = append(rep.PerTest, t)
 		}
 	}
+	sort.Slice(rep.PerTest, func(i, j int) bool {
+		a, b := rep.PerTest[i], rep.PerTest[j]
+		if a.TestClass != b.TestClass {
+			return a.TestClass < b.TestClass
+		}
+		if a.TestMethod != b.TestMethod {
+			return a.TestMethod < b.TestMethod
+		}
+		return a.Target < b.Target
+	})
+
 	ids := make([]string, 0, len(touched))
 	for id := range touched {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-
-	var out []ApexClassCoverage
 	for _, chunk := range chunkStrings(ids, 100) {
-		recs, _, err := c.QueryTooling(ctx, "SELECT ApexClassOrTrigger.Name, NumLinesCovered, NumLinesUncovered FROM ApexCodeCoverageAggregate WHERE ApexClassOrTriggerId IN ("+quoteList(chunk)+")")
+		recs, _, err := c.QueryTooling(ctx, "SELECT ApexClassOrTrigger.Name, NumLinesCovered, NumLinesUncovered, Coverage FROM ApexCodeCoverageAggregate WHERE ApexClassOrTriggerId IN ("+quoteList(chunk)+")")
 		if err != nil {
-			return nil, orgWide, err
+			return rep, err
 		}
 		for _, r := range recs {
 			var a struct {
@@ -281,24 +361,23 @@ func (c *Client) ApexCoverage(ctx context.Context, testClassIDs []string) ([]Ape
 				} `json:"ApexClassOrTrigger"`
 				Covered   int `json:"NumLinesCovered"`
 				Uncovered int `json:"NumLinesUncovered"`
+				Coverage  struct {
+					Uncovered []int `json:"uncoveredLines"`
+				} `json:"Coverage"`
 			}
 			if err := json.Unmarshal(r, &a); err != nil {
-				return nil, orgWide, err
+				return rep, err
 			}
-			cov := ApexClassCoverage{Name: a.Target.Name, LinesCovered: a.Covered, LinesUncovered: a.Uncovered}
+			cov := ApexClassCoverage{Name: a.Target.Name, LinesCovered: a.Covered, LinesUncovered: a.Uncovered, UncoveredLines: a.Coverage.Uncovered}
+			sort.Ints(cov.UncoveredLines)
 			if n := a.Covered + a.Uncovered; n > 0 {
 				cov.Percent = float64(a.Covered) * 100 / float64(n)
 			}
-			out = append(out, cov)
+			rep.Classes = append(rep.Classes, cov)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Percent != out[j].Percent {
-			return out[i].Percent < out[j].Percent
-		}
-		return out[i].Name < out[j].Name
-	})
-	return out, orgWide, nil
+	sort.Slice(rep.Classes, func(i, j int) bool { return rep.Classes[i].Name < rep.Classes[j].Name })
+	return rep, nil
 }
 
 func uniqueStrings(in []string) []string {

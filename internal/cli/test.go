@@ -24,7 +24,7 @@ func newTestCmd() *cobra.Command {
 	var classNames []string
 	var commit string
 	var testLevel, apiVersion string
-	var coverage, asJSON, dryRun, changed bool
+	var coverage, detailed, concise, asJSON, dryRun, changed bool
 	var wait int
 	cmd := &cobra.Command{
 		Use:   "test",
@@ -34,7 +34,9 @@ func newTestCmd() *cobra.Command {
 			"(class names may contain * wildcards, e.g. -n 'Account*Test')\n" +
 			"(repeatable, comma-separated allowed), or with -l RunLocalTests|RunAllTestsInOrg.\n" +
 			"Add -c/--code-coverage to list line coverage of every class and trigger the\n" +
-			"tests exercised, plus the org-wide percentage. Exits 1 if any test fails.\n\n" +
+			"tests exercised (with uncovered lines), plus the org-wide percentage;\n" +
+			"--detailed-coverage adds per-test-method coverage per class, --concise limits the\n" +
+			"final report to failures and the summary. Exits 1 if any test fails.\n\n" +
 			"Use --changed to run the test classes (@IsTest) added or modified in the git\n" +
 			"working tree vs HEAD (staged, unstaged, untracked), like sff deploy --changed, or\n" +
 			"--commit <sha> for the test classes one commit added or modified.",
@@ -45,6 +47,8 @@ func newTestCmd() *cobra.Command {
   sff test --changed -c
   sff test --commit HEAD~1 -c
   sff test -l RunLocalTests --code-coverage
+  sff test -n MyTest -c --detailed-coverage
+  sff test -n MyTest --concise
   sff test -n MyTest -c --json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -58,15 +62,20 @@ func newTestCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if detailed && !coverage {
+				return fmt.Errorf("--detailed-coverage requires -c/--code-coverage")
+			}
 			if wait < 0 {
 				return fmt.Errorf("--wait must be zero or positive (minutes)")
 			}
-			return runTests(cmd.Context(), req, apiVersion, coverage, asJSON, dryRun, time.Duration(wait)*time.Minute)
+			return runTests(cmd.Context(), req, apiVersion, testReport{Coverage: coverage, Detailed: detailed, Concise: concise}, asJSON, dryRun, time.Duration(wait)*time.Minute)
 		},
 	}
 	cmd.Flags().StringArrayVarP(&classNames, "class-names", "n", nil, "test class, or Class.method (repeatable, comma-separated allowed)")
 	cmd.Flags().StringVarP(&testLevel, "test-level", "l", "", "RunLocalTests|RunAllTestsInOrg")
 	cmd.Flags().BoolVarP(&coverage, "code-coverage", "c", false, "report code coverage of the classes the tests exercised")
+	cmd.Flags().BoolVar(&detailed, "detailed-coverage", false, "with -c: also show, per test method, the coverage it achieved on each class (like sf)")
+	cmd.Flags().BoolVar(&concise, "concise", false, "print only failing tests (and the summary) in the final report")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the result as JSON")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "resolve the tests to run (expanding * wildcards) and print them without running")
 	cmd.Flags().BoolVar(&changed, "changed", false, "run the test classes changed in the git working tree vs HEAD (staged, unstaged, untracked)")
@@ -240,13 +249,21 @@ func expandWildcardTests(ctx context.Context, client *sfapi.Client, items []sfap
 	return out, nil
 }
 
+// testReport selects which tables the final report contains.
+type testReport struct {
+	Coverage bool // -c
+	Detailed bool // --detailed-coverage
+	Concise  bool // --concise
+}
+
 type testOutput struct {
 	*sfapi.ApexTestRun
 	Coverage        []sfapi.ApexClassCoverage `json:"coverage,omitempty"`
+	PerTestCoverage []sfapi.ApexTestCoverage  `json:"perTestCoverage,omitempty"`
 	OrgWideCoverage *float64                  `json:"orgWideCoverage,omitempty"`
 }
 
-func runTests(ctx context.Context, req sfapi.ApexTestRequest, apiVersion string, coverage, asJSON, dryRun bool, wait time.Duration) error {
+func runTests(ctx context.Context, req sfapi.ApexTestRequest, apiVersion string, rep testReport, asJSON, dryRun bool, wait time.Duration) error {
 	org, err := auth.Resolve(targetOrg)
 	if err != nil {
 		return err
@@ -305,30 +322,29 @@ func runTests(ctx context.Context, req sfapi.ApexTestRequest, apiVersion string,
 			}
 			prog.Print(os.Stdout, b.String())
 		}
-		hooks.ClassDone = func(_ string, tests []sfapi.ApexTestOutcome) {
-			var b strings.Builder
-			for _, t := range tests {
-				writeTestLine(&b, t)
-			}
-			prog.Print(os.Stdout, b.String())
-		}
 	}
 	run, err := client.RunApexTests(ctx, req, hooks)
-	if err == nil && coverage {
+	if err == nil && rep.Coverage {
 		prog.Update("collecting code coverage")
 	}
 	var out testOutput
 	if err == nil {
 		out.ApexTestRun = run
-		if coverage {
-			var ids []string
+		if rep.Coverage {
+			names := map[string]string{}
 			for _, t := range run.Tests {
-				ids = append(ids, t.ClassID)
+				names[t.ClassID] = t.ClassName
 			}
-			var orgWide float64
-			out.Coverage, orgWide, err = client.ApexCoverage(ctx, ids)
-			if err == nil && orgWide >= 0 {
-				out.OrgWideCoverage = &orgWide
+			var cr *sfapi.ApexCoverageReport
+			cr, err = client.ApexCoverage(ctx, names)
+			if cr != nil {
+				out.Coverage = cr.Classes
+				if rep.Detailed {
+					out.PerTestCoverage = cr.PerTest
+				}
+				if cr.OrgWide >= 0 {
+					out.OrgWideCoverage = &cr.OrgWide
+				}
 			}
 		}
 	}
@@ -348,7 +364,7 @@ func runTests(ctx context.Context, req sfapi.ApexTestRequest, apiVersion string,
 			return err
 		}
 	} else {
-		printTestRun(out, !streamed)
+		printTestRun(os.Stdout, out, rep, org, termWidth())
 	}
 	if failed {
 		return &ExitError{Code: 1}
@@ -356,55 +372,127 @@ func runTests(ctx context.Context, req sfapi.ApexTestRequest, apiVersion string,
 	return nil
 }
 
-// writeTestLine renders one test outcome: mark, right-aligned run time, name;
-// failures are followed by the indented message and stack trace.
-func writeTestLine(w io.Writer, t sfapi.ApexTestOutcome) {
-	mark := "✔"
-	switch t.Outcome {
-	case "Pass":
-	case "Skip":
-		mark = "-"
-	default:
-		mark = "✘"
+// pctStr renders a coverage percentage like sf: whole numbers, never "100%"
+// unless every line is covered.
+func pctStr(covered, uncovered int) string {
+	if uncovered == 0 {
+		return "100%"
 	}
-	fmt.Fprintf(w, "%s %6d ms  %s.%s\n", mark, t.RunTimeMs, t.ClassName, t.Method)
-	if mark == "✘" {
-		if t.Message != "" {
-			fmt.Fprintf(w, "    %s\n", strings.ReplaceAll(strings.TrimSpace(t.Message), "\n", "\n    "))
-		}
-		if t.StackTrace != "" {
-			fmt.Fprintf(w, "    %s\n", strings.ReplaceAll(strings.TrimSpace(t.StackTrace), "\n", "\n    "))
-		}
+	p := int(float64(covered)*100/float64(covered+uncovered) + 0.5)
+	if p > 99 {
+		p = 99
 	}
+	return fmt.Sprintf("%d%%", p)
 }
 
-// printTestRun prints the final report. withTests is false when the per-method
-// lines were already streamed while the run progressed.
-func printTestRun(out testOutput, withTests bool) {
-	run := out.ApexTestRun
-	if withTests {
-		for _, t := range run.Tests {
-			writeTestLine(os.Stdout, t)
+func uncoveredStr(lines []int) string {
+	const limit = 5
+	var b strings.Builder
+	for i, n := range lines {
+		if i == limit {
+			b.WriteString(",...")
+			break
 		}
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, "%d", n)
 	}
-	for _, e := range run.Errors {
-		fmt.Printf("✘ %s\n", e)
-	}
-	fmt.Printf("\n%d passed, %d failed, %d skipped in %s\n", run.Passed, run.Failed, run.Skipped, fmtDuration(run.Duration))
+	return b.String()
+}
 
-	if out.Coverage != nil || out.OrgWideCoverage != nil {
-		fmt.Println("\nCode coverage:")
-		var cov, unc int
-		for _, c := range out.Coverage {
-			cov += c.LinesCovered
-			unc += c.LinesUncovered
-			fmt.Printf("  %6.2f%%  %-40s %d/%d lines\n", c.Percent, c.Name, c.LinesCovered, c.LinesCovered+c.LinesUncovered)
-		}
-		if cov+unc > 0 {
-			fmt.Printf("  %6.2f%%  %-40s %d/%d lines\n", float64(cov)*100/float64(cov+unc), "TOTAL (classes above)", cov, cov+unc)
-		}
-		if out.OrgWideCoverage != nil {
-			fmt.Printf("  %6.2f%%  org-wide\n", *out.OrgWideCoverage)
+func testMessage(t sfapi.ApexTestOutcome) string {
+	if t.StackTrace != "" {
+		return t.Message + "\n" + t.StackTrace
+	}
+	return t.Message
+}
+
+func isTestFailure(t sfapi.ApexTestOutcome) bool { return t.Outcome != "Pass" && t.Outcome != "Skip" }
+
+func ratePct(n, total int) string {
+	if total == 0 {
+		return "0%"
+	}
+	return fmt.Sprintf("%d%%", int(float64(n)*100/float64(total)+0.5))
+}
+
+// printTestRun prints the final report in the layout of sf apex run test:
+// Test Results (or the detailed per-test coverage), coverage by class, summary.
+func printTestRun(w io.Writer, out testOutput, rep testReport, org *auth.Org, width int) {
+	run := out.ApexTestRun
+	for _, e := range run.Errors {
+		fmt.Fprintf(w, "✘ %s\n", e)
+	}
+
+	// Per-test rows (concise keeps failures only).
+	var tests []sfapi.ApexTestOutcome
+	for _, t := range run.Tests {
+		if !rep.Concise || isTestFailure(t) {
+			tests = append(tests, t)
 		}
 	}
+	fmt.Fprintln(w)
+	if rep.Detailed && out.Coverage != nil {
+		byTest := map[string][]sfapi.ApexTestCoverage{}
+		for _, c := range out.PerTestCoverage {
+			k := c.TestClass + "." + c.TestMethod
+			byTest[k] = append(byTest[k], c)
+		}
+		var rows [][]string
+		for _, t := range tests {
+			name := t.ClassName + "." + t.Method
+			covs := byTest[name]
+			if len(covs) == 0 {
+				rows = append(rows, []string{name, "", t.Outcome, "", testMessage(t), fmt.Sprint(t.RunTimeMs)})
+			}
+			for _, c := range covs {
+				rows = append(rows, []string{name, c.Target, t.Outcome, pctStr(c.LinesCovered, c.LinesUncovered), testMessage(t), fmt.Sprint(t.RunTimeMs)})
+			}
+		}
+		if len(rows) > 0 {
+			printTable(w, "Apex Code Coverage for Test Run "+run.JobID,
+				[]string{"TEST NAME", "CLASS BEING TESTED", "OUTCOME", "PERCENT", "MESSAGE", "RUNTIME (MS)"}, rows, width)
+			fmt.Fprint(w, "\n\n")
+		}
+	} else if len(tests) > 0 {
+		var rows [][]string
+		for _, t := range tests {
+			rows = append(rows, []string{t.ClassName + "." + t.Method, t.Outcome, testMessage(t), fmt.Sprint(t.RunTimeMs)})
+		}
+		printTable(w, "Test Results", []string{"TEST NAME", "OUTCOME", "MESSAGE", "RUNTIME (MS)"}, rows, width)
+		fmt.Fprint(w, "\n\n")
+	}
+
+	if out.Coverage != nil && !rep.Concise {
+		var rows [][]string
+		for _, c := range out.Coverage {
+			rows = append(rows, []string{c.Name, pctStr(c.LinesCovered, c.LinesUncovered), uncoveredStr(c.UncoveredLines)})
+		}
+		printTable(w, "Apex Code Coverage by Class", []string{"CLASSES", "PERCENT", "UNCOVERED LINES"}, rows, width)
+		fmt.Fprint(w, "\n\n")
+	}
+
+	ran := len(run.Tests)
+	outcome := "Passed"
+	if run.Failed > 0 || len(run.Errors) > 0 {
+		outcome = "Failed"
+	}
+	rows := [][]string{
+		{"Outcome", outcome},
+		{"Tests Ran", fmt.Sprint(ran)},
+		{"Pass Rate", ratePct(run.Passed, ran)},
+		{"Fail Rate", ratePct(run.Failed, ran)},
+		{"Skip Rate", ratePct(run.Skipped, ran)},
+		{"Test Run Id", run.JobID},
+		{"Test Setup Time", fmt.Sprintf("%d ms", run.SetupTimeMs)},
+		{"Test Execution Time", fmt.Sprintf("%d ms", run.TestTimeMs)},
+		{"Test Total Time", fmt.Sprintf("%d ms", run.SetupTimeMs+run.TestTimeMs)},
+		{"Org Id", org.OrgID},
+		{"Username", org.Username},
+	}
+	if out.OrgWideCoverage != nil {
+		rows = append(rows, []string{"Org Wide Coverage", fmt.Sprintf("%d%%", int(*out.OrgWideCoverage+0.5))})
+	}
+	printTable(w, "Test Summary", []string{"NAME", "VALUE"}, rows, width)
 }

@@ -387,12 +387,17 @@ test fails.
 sff test -n MyTest                                  # a class
 sff test -n MyTest.testInsert -n OtherTest -c       # methods/classes + code coverage
 sff test -l RunLocalTests --code-coverage           # all local tests
+sff test -n MyTest -c --detailed-coverage           # + per-test-method coverage per class
+sff test -n MyTest --concise                        # failures + summary only
 sff test -n MyTest --json
 sff test -n 'Account*Test' --dry-run                # * wildcards in class names; --dry-run lists the matches
 ```
 
-`-c/--code-coverage` adds line coverage for every class/trigger the tests hit,
-plus the org-wide percentage.
+Results stream per class while the run progresses; the final report uses the same
+tables as `sf apex run test` (Test Results, Test Summary). `-c/--code-coverage` adds
+"Apex Code Coverage by Class" (percent + uncovered lines, sorted by name) and the
+org-wide percentage; `--detailed-coverage` replaces Test Results with the per-test
+coverage table; `--concise` keeps only failing tests and the summary.
 
 ## Manifests from git (`sff manifest`)
 
