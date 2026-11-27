@@ -3,6 +3,8 @@ package sfapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -108,5 +110,30 @@ func TestQueryStream_SlowConsumerBackpressure(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("stream did not finish after consumer was released")
+	}
+}
+
+func TestChunkRamp(t *testing.T) {
+	urls := make([]string, 100)
+	for i := range urls {
+		urls[i] = fmt.Sprint(i)
+	}
+	g := chunkRamp(urls, 25)
+	var sizes []int
+	n := 0
+	for _, x := range g {
+		sizes = append(sizes, len(x))
+		for _, u := range x {
+			if u != fmt.Sprint(n) {
+				t.Fatalf("order broken at %d: %s", n, u)
+			}
+			n++
+		}
+	}
+	if n != 100 || !reflect.DeepEqual(sizes, []int{1, 2, 4, 8, 16, 25, 25, 19}) {
+		t.Errorf("n=%d sizes=%v", n, sizes)
+	}
+	if len(chunkRamp(nil, 25)) != 0 {
+		t.Error("empty input must give no groups")
 	}
 }

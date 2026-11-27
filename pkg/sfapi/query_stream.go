@@ -89,7 +89,7 @@ func (c *Client) streamPagesComposite(ctx context.Context, first QueryResult, em
 	for off := pageSize * 2; off < first.TotalSize; off += pageSize {
 		pageURLs = append(pageURLs, fmt.Sprintf("%s-%d", locatorBase, off))
 	}
-	groups := chunkStrings(pageURLs, MaxBatchSubrequests)
+	groups := chunkRamp(pageURLs, MaxBatchSubrequests)
 
 	type groupResult struct {
 		records []json.RawMessage
@@ -164,4 +164,28 @@ func (c *Client) streamPagesComposite(ctx context.Context, first QueryResult, em
 		}
 	}
 	return nil
+}
+
+// chunkRamp splits s into groups that start small and double up to max (1, 2, 4, 8, 16, 25, 25, ...).
+// A group is emitted only when ALL its pages have arrived, so with full-size groups a wide result
+// shows nothing after the first page until a 25-page response (tens of MB, many seconds) is complete.
+// Small early groups bring rows within about one page's latency; the later full-size groups keep the throughput.
+func chunkRamp(s []string, max int) [][]string {
+	var chunks [][]string
+	size := 1
+	for i := 0; i < len(s); {
+		end := i + size
+		if end > len(s) {
+			end = len(s)
+		}
+		chunks = append(chunks, s[i:end])
+		i = end
+		if size < max {
+			size *= 2
+			if size > max {
+				size = max
+			}
+		}
+	}
+	return chunks
 }
