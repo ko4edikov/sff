@@ -101,7 +101,7 @@ func (s *parquetSink) write(records []json.RawMessage) error {
 				s.badVals[c]++
 				continue
 			}
-			m[c] = cv
+			m[c] = boxCell(cv)
 		}
 		out[i] = m
 	}
@@ -308,4 +308,23 @@ func writeParquet(w io.Writer, records []json.RawMessage, total int, describe fu
 		return err
 	}
 	return bw.Flush()
+}
+
+// boxCell wraps a converted cell in a pointer. parquet-go treats the zero value
+// of an optional column in a map row (false, 0, 0.0) as null, which would
+// silently turn real data into NULL; a non-nil pointer is always a value.
+func boxCell(v any) any {
+	switch x := v.(type) {
+	case bool:
+		return &x
+	case int32:
+		return &x
+	case int64:
+		return &x
+	case float64:
+		return &x
+	case string:
+		return &x
+	}
+	return v
 }

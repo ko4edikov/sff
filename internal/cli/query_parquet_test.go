@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -121,5 +122,18 @@ func TestConvertCell(t *testing.T) {
 	}
 	if _, err := convertCell(pqInt, "5.5"); err == nil {
 		t.Error("5.5 should not be an int")
+	}
+}
+
+// Zero values (false, 0, 0.0) must survive as values, not become NULL.
+func TestBoxCellKeepsZeroValues(t *testing.T) {
+	for _, v := range []any{false, int64(0), 0.0, int32(0), ""} {
+		b := boxCell(v)
+		if b == nil || reflect.ValueOf(b).Kind() != reflect.Ptr || reflect.ValueOf(b).IsNil() {
+			t.Fatalf("boxCell(%v) = %v, want non-nil pointer", v, b)
+		}
+		if reflect.ValueOf(b).Elem().Interface() != v {
+			t.Fatalf("boxCell(%v) lost its value: %v", v, b)
+		}
 	}
 }

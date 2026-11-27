@@ -23,7 +23,7 @@ import (
 )
 
 func newQueryCmd() *cobra.Command {
-	var asJSON, asCSV, asParquet, useTooling, stream bool
+	var asJSON, asCSV, asParquet, useTooling, stream, bulk bool
 	var outFile string
 	var concurrency int
 	cmd := &cobra.Command{
@@ -34,7 +34,9 @@ func newQueryCmd() *cobra.Command {
   sff query "SELECT Id FROM Contact" -o pr-dev --json
   sff query "SELECT Id, Name FROM ApexClass" -t
   sff query "SELECT Id, Name FROM Account" --csv -f accounts.csv
-  sff query "SELECT Id, Name, CreatedDate FROM Account" -f accounts.parquet`,
+  sff query "SELECT Id, Name, CreatedDate FROM Account" -f accounts.parquet
+  sff query "SELECT Id, Name FROM Big__c" --bulk -f big.csv
+  sff query "SELECT Id, Name FROM Big__c" --bulk -c 10 -f big.parquet`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			soql := strings.TrimSpace(strings.Join(args, " "))
@@ -53,6 +55,12 @@ func newQueryCmd() *cobra.Command {
 			if format == formatParquet && outFile == "" && term.IsTerminal(int(os.Stdout.Fd())) {
 				return fmt.Errorf("Parquet is binary: use -f <file>.parquet or pipe the output")
 			}
+			if bulk {
+				if useTooling || asJSON {
+					return fmt.Errorf("--bulk produces CSV or Parquet and can't be combined with --json or --use-tooling-api")
+				}
+				return runBulkQuery(cmd.Context(), soql, outFile, concurrency, format == formatParquet)
+			}
 			return runQuery(cmd.Context(), soql, format, outFile, useTooling, concurrency, stream)
 		},
 	}
@@ -60,9 +68,10 @@ func newQueryCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asCSV, "csv", false, "output CSV")
 	cmd.Flags().BoolVar(&asParquet, "parquet", false, "output Parquet (typed, zstd-compressed; implied by -f *.parquet)")
 	cmd.Flags().BoolVar(&stream, "stream", false, "stream JSON/CSV/Parquet page by page: flat memory for huge exports, but columns/types are fixed by the first page")
+	cmd.Flags().BoolVar(&bulk, "bulk", false, "run as a Bulk API 2.0 query job (for huge tables where REST pagination stalls); output is CSV, or Parquet with --parquet/-f *.parquet. The job runs server-side first, so no rows appear until it completes; the result then downloads in parallel chunks (-c)")
 	cmd.Flags().StringVarP(&outFile, "out-file", "f", "", "write the result to a file instead of stdout")
 	cmd.Flags().BoolVarP(&useTooling, "use-tooling-api", "t", false, "query the Tooling API (e.g. ApexClass, Flow, CustomField)")
-	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", sfapi.DefaultBatchConcurrency, "max parallel composite/batch calls when paginating large results")
+	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", sfapi.DefaultBatchConcurrency, "max parallel composite/batch calls when paginating large results (with --bulk: parallel result-chunk downloads)")
 	cmd.MarkFlagsMutuallyExclusive("json", "csv", "parquet")
 	addTargetOrgFlag(cmd)
 	return cmd
