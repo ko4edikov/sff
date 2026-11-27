@@ -50,8 +50,12 @@ func (c *Client) BulkQuery(ctx context.Context, soql string, w io.Writer, opts B
 	}
 	base := fmt.Sprintf("/services/data/%s/jobs/query", c.APIVersion)
 
+	operation := "query"
+	if c.AllRows {
+		operation = "queryAll" // include soft-deleted and archived records
+	}
 	body, _ := json.Marshal(map[string]string{
-		"operation":   "query",
+		"operation":   operation,
 		"query":       soql,
 		"contentType": "CSV",
 		"lineEnding":  "LF",

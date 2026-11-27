@@ -18,9 +18,9 @@ import (
 // the remaining fetches and is returned. When tooling is true the Tooling API
 // is used and pages are walked serially.
 func (c *Client) QueryStream(ctx context.Context, soql string, tooling bool, onPage func(records []json.RawMessage, totalSize int) error) error {
-	resource := "query"
+	resource := c.queryPath("query")
 	if tooling {
-		resource = "tooling/query"
+		resource = c.queryPath("tooling/query")
 	}
 	path := fmt.Sprintf("/services/data/%s/%s/?q=%s", c.APIVersion, resource, url.QueryEscape(soql))
 	first, err := c.queryPage(ctx, path)

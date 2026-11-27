@@ -31,13 +31,14 @@ type recordSink interface {
 
 // runQueryStream streams a query straight to the output (JSON/CSV) so memory
 // stays flat and the first rows appear as soon as the first page arrives.
-func runQueryStream(ctx context.Context, soql string, format outFormat, outFile string, useTooling bool, concurrency int) error {
+func runQueryStream(ctx context.Context, soql string, format outFormat, outFile string, useTooling bool, concurrency int, allRows bool) error {
 	org, err := auth.Resolve(targetOrg)
 	if err != nil {
 		return err
 	}
 	client := sfapi.New(org)
 	client.BatchConcurrency = concurrency
+	client.AllRows = allRows
 
 	var out io.Writer = os.Stdout
 	var f *os.File

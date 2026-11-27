@@ -23,7 +23,7 @@ import (
 
 // runBulkQuery runs soql as a Bulk API 2.0 query job and streams the CSV result
 // to outFile (or stdout). Ctrl+C aborts the job server-side.
-func runBulkQuery(ctx context.Context, soql, outFile string, concurrency int, parquetOut bool) error {
+func runBulkQuery(ctx context.Context, soql, outFile string, concurrency int, parquetOut, allRows bool) error {
 	org, err := auth.Resolve(targetOrg)
 	if err != nil {
 		return err
@@ -32,6 +32,7 @@ func runBulkQuery(ctx context.Context, soql, outFile string, concurrency int, pa
 	defer stop()
 
 	client := sfapi.New(org)
+	client.AllRows = allRows
 
 	var out io.Writer = os.Stdout
 	if outFile != "" {

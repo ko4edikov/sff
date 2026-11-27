@@ -25,7 +25,7 @@ type QueryResult struct {
 // set spans multiple pages it accelerates pagination via the Composite Batch
 // API (see fetchPagesComposite) instead of walking nextRecordsUrl serially.
 func (c *Client) Query(ctx context.Context, soql string) ([]json.RawMessage, int, error) {
-	return c.queryResource(ctx, "query", soql, true)
+	return c.queryResource(ctx, c.queryPath("query"), soql, true)
 }
 
 // QueryTooling runs a SOQL statement against the Tooling API (the equivalent of
@@ -33,7 +33,17 @@ func (c *Client) Query(ctx context.Context, soql string) ([]json.RawMessage, int
 // Flow, or CustomField. Tooling pagination is walked serially: composite/batch
 // is not a reliable accelerator for tooling/query locators.
 func (c *Client) QueryTooling(ctx context.Context, soql string) ([]json.RawMessage, int, error) {
-	return c.queryResource(ctx, "tooling/query", soql, false)
+	return c.queryResource(ctx, c.queryPath("tooling/query"), soql, false)
+}
+
+// queryPath returns the query resource to hit: with AllRows set, the
+// "queryAll" variant, which also returns soft-deleted records (IsDeleted = true)
+// and archived Task/Event rows.
+func (c *Client) queryPath(resource string) string {
+	if c.AllRows {
+		return strings.TrimSuffix(resource, "query") + "queryAll"
+	}
+	return resource
 }
 
 // queryResource fetches the first page, then either accelerates the remaining

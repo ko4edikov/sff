@@ -34,6 +34,9 @@ type Client struct {
 	// used to accelerate multi-page queries. Zero or less falls back to
 	// DefaultBatchConcurrency.
 	BatchConcurrency int
+	// AllRows makes queries use queryAll (and Bulk operation "queryAll"), so
+	// soft-deleted (IsDeleted = true) and archived records are returned too.
+	AllRows bool
 }
 
 // New returns a Client for org using the default API version.

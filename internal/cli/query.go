@@ -23,7 +23,7 @@ import (
 )
 
 func newQueryCmd() *cobra.Command {
-	var asJSON, asCSV, asParquet, useTooling, stream, bulk bool
+	var asJSON, asCSV, asParquet, useTooling, stream, bulk, allRows bool
 	var outFile string
 	var concurrency int
 	cmd := &cobra.Command{
@@ -35,6 +35,7 @@ func newQueryCmd() *cobra.Command {
   sff query "SELECT Id, Name FROM ApexClass" -t
   sff query "SELECT Id, Name FROM Account" --csv -f accounts.csv
   sff query "SELECT Id, Name, CreatedDate FROM Account" -f accounts.parquet
+  sff query "SELECT Id, Name FROM Account WHERE IsDeleted = true" --all-rows
   sff query "SELECT Id, Name FROM Big__c" --bulk -f big.csv
   sff query "SELECT Id, Name FROM Big__c" --bulk -c 10 -f big.parquet`,
 		Args: cobra.ArbitraryArgs,
@@ -59,9 +60,9 @@ func newQueryCmd() *cobra.Command {
 				if useTooling || asJSON {
 					return fmt.Errorf("--bulk produces CSV or Parquet and can't be combined with --json or --use-tooling-api")
 				}
-				return runBulkQuery(cmd.Context(), soql, outFile, concurrency, format == formatParquet)
+				return runBulkQuery(cmd.Context(), soql, outFile, concurrency, format == formatParquet, allRows)
 			}
-			return runQuery(cmd.Context(), soql, format, outFile, useTooling, concurrency, stream)
+			return runQuery(cmd.Context(), soql, format, outFile, useTooling, concurrency, stream, allRows)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output raw JSON records")
@@ -69,6 +70,7 @@ func newQueryCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asParquet, "parquet", false, "output Parquet (typed, zstd-compressed; implied by -f *.parquet)")
 	cmd.Flags().BoolVar(&stream, "stream", false, "stream JSON/CSV/Parquet page by page: flat memory for huge exports, but columns/types are fixed by the first page")
 	cmd.Flags().BoolVar(&bulk, "bulk", false, "run as a Bulk API 2.0 query job (for huge tables where REST pagination stalls); output is CSV, or Parquet with --parquet/-f *.parquet. The job runs server-side first, so no rows appear until it completes; the result then downloads in parallel chunks (-c)")
+	cmd.Flags().BoolVar(&allRows, "all-rows", false, "include soft-deleted (IsDeleted = true) and archived records (queryAll; with --bulk: Bulk operation queryAll)")
 	cmd.Flags().StringVarP(&outFile, "out-file", "f", "", "write the result to a file instead of stdout")
 	cmd.Flags().BoolVarP(&useTooling, "use-tooling-api", "t", false, "query the Tooling API (e.g. ApexClass, Flow, CustomField)")
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", sfapi.DefaultBatchConcurrency, "max parallel composite/batch calls when paginating large results (with --bulk: parallel result-chunk downloads)")
@@ -89,13 +91,13 @@ const (
 	formatParquet
 )
 
-func runQuery(ctx context.Context, soql string, format outFormat, outFile string, useTooling bool, concurrency int, stream bool) error {
+func runQuery(ctx context.Context, soql string, format outFormat, outFile string, useTooling bool, concurrency int, stream, allRows bool) error {
 	// By default every format is buffered: all rows are fetched first, so the
 	// column set and types come from the whole result. --stream writes JSON/CSV/
 	// Parquet page by page instead (flat memory, but the schema is fixed by the
 	// first page).
 	if stream && format != formatTable {
-		return runQueryStream(ctx, soql, format, outFile, useTooling, concurrency)
+		return runQueryStream(ctx, soql, format, outFile, useTooling, concurrency, allRows)
 	}
 	org, err := auth.Resolve(targetOrg)
 	if err != nil {
@@ -104,6 +106,7 @@ func runQuery(ctx context.Context, soql string, format outFormat, outFile string
 
 	client := sfapi.New(org)
 	client.BatchConcurrency = concurrency
+	client.AllRows = allRows
 	queryFn := client.Query
 	if useTooling {
 		queryFn = client.QueryTooling
