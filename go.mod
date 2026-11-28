@@ -4,6 +4,8 @@ go 1.26.4
 
 require (
 	github.com/briandowns/spinner v1.23.2
+	github.com/cpuguy83/go-md2man/v2 v2.0.6
+	github.com/parquet-go/parquet-go v0.32.1
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.1.0
@@ -19,8 +21,8 @@ require (
 	github.com/mattn/go-isatty v0.0.8 // indirect
 	github.com/parquet-go/bitpack v1.0.3 // indirect
 	github.com/parquet-go/jsonlite v1.5.5 // indirect
-	github.com/parquet-go/parquet-go v0.32.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.33 // indirect
+	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/twpayne/go-geom v1.6.1 // indirect
 	golang.org/x/sys v0.48.0 // indirect

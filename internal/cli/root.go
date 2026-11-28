@@ -66,6 +66,7 @@ func newRootCmd(version string) *cobra.Command {
 	root.AddCommand(newDiffCmd())
 	root.AddCommand(newPullCmd())
 	root.AddCommand(newUpdateCmd(version))
+	root.SetHelpCommand(newHelpCmd())
 	return root
 }
 

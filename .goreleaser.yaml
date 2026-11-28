@@ -7,6 +7,8 @@ project_name: sff
 before:
   hooks:
     - go mod tidy
+    # Man page for `man sff`, generated from the command tree.
+    - sh -c 'go run -ldflags "-X main.version={{ .Version }}" . help reference --man > sff.1'
 
 builds:
   - main: .
@@ -25,6 +27,9 @@ builds:
 
 archives:
   - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - src: sff.1
+        dst: man/man1/
     formats: [tar.gz]
     format_overrides:
       - goos: windows
