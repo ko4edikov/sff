@@ -29,7 +29,7 @@ archives:
   - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - src: sff.1
-        dst: man/man1/
+        dst: man/man1/sff.1
     formats: [tar.gz]
     format_overrides:
       - goos: windows
