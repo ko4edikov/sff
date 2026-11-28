@@ -95,6 +95,15 @@ type DeployResult struct {
 	NumberTestsTotal         int
 	NumberTestsCompleted     int
 	NumberTestErrors         int
+	CreatedBy                string
+	CreatedByName            string
+	CreatedDate              string
+	StartDate                string
+	CompletedDate            string
+	LastModifiedDate         string
+	IgnoreWarnings           bool
+	RollbackOnError          bool
+	RunTestsEnabled          bool
 	ComponentFailures        []ComponentMessage
 	ComponentSuccesses       []ComponentMessage
 	TestFailures             []TestFailure
@@ -128,6 +137,15 @@ type deployStatusEnv struct {
 		NumberTestsTotal         int    `xml:"numberTestsTotal"`
 		NumberTestsCompleted     int    `xml:"numberTestsCompleted"`
 		NumberTestErrors         int    `xml:"numberTestErrors"`
+		CreatedBy                string `xml:"createdBy"`
+		CreatedByName            string `xml:"createdByName"`
+		CreatedDate              string `xml:"createdDate"`
+		StartDate                string `xml:"startDate"`
+		CompletedDate            string `xml:"completedDate"`
+		LastModifiedDate         string `xml:"lastModifiedDate"`
+		IgnoreWarnings           bool   `xml:"ignoreWarnings"`
+		RollbackOnError          bool   `xml:"rollbackOnError"`
+		RunTestsEnabled          bool   `xml:"runTestsEnabled"`
 		Details                  struct {
 			ComponentFailures  []ComponentMessage `xml:"componentFailures"`
 			ComponentSuccesses []ComponentMessage `xml:"componentSuccesses"`
@@ -197,6 +215,15 @@ func (c *Client) CheckDeployStatus(ctx context.Context, id string) (done bool, r
 		NumberTestsTotal:         r.NumberTestsTotal,
 		NumberTestsCompleted:     r.NumberTestsCompleted,
 		NumberTestErrors:         r.NumberTestErrors,
+		CreatedBy:                r.CreatedBy,
+		CreatedByName:            r.CreatedByName,
+		CreatedDate:              r.CreatedDate,
+		StartDate:                r.StartDate,
+		CompletedDate:            r.CompletedDate,
+		LastModifiedDate:         r.LastModifiedDate,
+		IgnoreWarnings:           r.IgnoreWarnings,
+		RollbackOnError:          r.RollbackOnError,
+		RunTestsEnabled:          r.RunTestsEnabled,
 		ComponentFailures:        r.Details.ComponentFailures,
 		ComponentSuccesses:       r.Details.ComponentSuccesses,
 		TestFailures:             r.Details.RunTestResult.Failures,

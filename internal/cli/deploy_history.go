@@ -173,20 +173,7 @@ func runDeployReport(ctx context.Context, org *auth.Org, id, apiVersion string, 
 	if err != nil {
 		return err
 	}
-	kind := "deploy"
-	if res.CheckOnly {
-		kind = "validation"
-	}
-	fmt.Printf("%s %s: %s (%d/%d components, %d error(s))\n", kind, res.ID, res.Status,
-		res.NumberComponentsDeployed, res.NumberComponentsTotal, res.NumberComponentErrors)
-	if res.NumberTestsTotal > 0 {
-		fmt.Printf("tests: %d/%d run, %d failed\n", res.NumberTestsCompleted, res.NumberTestsTotal, res.NumberTestErrors)
-	}
-	printDeploySuccesses(os.Stdout, res.ComponentSuccesses)
-	printDeployFailures(res)
-	if withTests {
-		printDeployTests(os.Stdout, res)
-	}
+	printDeployReport(os.Stdout, res, org, withTests)
 	if !res.Success && res.Done {
 		return &ExitError{Code: 1}
 	}
